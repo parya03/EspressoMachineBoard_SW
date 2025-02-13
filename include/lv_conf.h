@@ -1,6 +1,3 @@
-#ifndef LV_CONF_H
-#define LV_CONF_H
-
 /**
  * @file lv_conf.h
  * Configuration file for v9.3.0-dev
@@ -17,7 +14,7 @@
  */
 
 /* clang-format off */
-#if 0 /* Set this to "1" to enable content */
+#if 1 /* Set this to "1" to enable content */
 
 #ifndef LV_CONF_H
 #define LV_CONF_H
@@ -112,7 +109,7 @@
  * - LV_OS_MQX
  * - LV_OS_SDL2
  * - LV_OS_CUSTOM */
-#define LV_USE_OS   LV_OS_NONE
+#define LV_USE_OS   LV_OS_FREERTOS
 
 #if LV_USE_OS == LV_OS_CUSTOM
     #define LV_OS_CUSTOM_INCLUDE <stdint.h>
@@ -1318,5 +1315,3 @@
 #endif /*LV_CONF_H*/
 
 #endif /*End of "Content enable"*/
-
-#endif

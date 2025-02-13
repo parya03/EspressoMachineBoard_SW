@@ -16,5 +16,6 @@
 #define IO_LCD_CLK GPIO_NUM_12
 #define IO_LCD_MISO GPIO_NUM_13
 #define IO_LCD_RESET GPIO_NUM_14
+#define IO_LCD_LED GPIO_NUM_21
 
 #endif
