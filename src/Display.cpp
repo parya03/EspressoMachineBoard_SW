@@ -28,7 +28,13 @@ gpio_config_t lcd_io_conf = {
 
 spi_device_handle_t spi;
 
+static TaskHandle_t fb_flush_task_handle;
+static SemaphoreHandle_t fb_flush_sem;
+
+SemaphoreHandle_t lvgl_mutex;
+
 lv_display_t *lvgl_display;
+lv_indev_t *lvgl_encoder_input; // Input encoder
 
 // LCD framebuffer
 DMA_ATTR uint16_t lcd_fb[20 * 480] = { 0 };
@@ -41,6 +47,16 @@ spi_device_interface_config_t devcfg = { 0 };
 IRAM_ATTR void lcd_spi_pre_transfer_callback(spi_transaction_t *trans) {
     // Set D/C properly based off of user defined thing
     gpio_set_level(IO_LCD_DC, (int)(trans->user));
+
+    // Take TX mutex so thread can block until transfer is done
+    xSemaphoreTakeFromISR(fb_flush_sem, NULL);
+
+    return;
+}
+
+IRAM_ATTR void lcd_transfer_done_cb(spi_transaction_t *trans) {
+    // Notify task that transfer is done
+    xSemaphoreGiveFromISR(fb_flush_sem, NULL);
 
     return;
 }
@@ -249,7 +265,7 @@ esp_err_t lcd_write_fb_xy(uint32_t x1, uint32_t y1, uint32_t x2, uint32_t y2, ui
 esp_err_t lcd_fill_color(uint16_t color) {
     ESP_LOGI(TAG, "Fill LCD with color 0x%4X", color);
 
-    for(int i = 0; i < 20 * 480; i++) {
+    for(int i = 0; i < (LCD_FB_SIZE_BYTES / 2); i++) {
         lcd_fb[i] = color;
     }
 
@@ -260,21 +276,120 @@ esp_err_t lcd_fill_color(uint16_t color) {
     return 0;
 }
 
-void lvgl_flush_fb_cb(lv_display_t *disp, const lv_area_t *area, unsigned char *px_map) {
+struct Args {
+    const lv_area_t *area;
+    uint16_t *fb;
+} args;
 
-    uint16_t *lvgl_fb = (uint16_t *)px_map;
-    lcd_write_fb_xy(area->x1, area->y1, area->x2, area->y2, lvgl_fb);
+// FB flush FreeRTOS task
+void lvgl_flush_fb_task(void *pvParameters) {
+    struct Args *args = (struct Args *)pvParameters;
+    const lv_area_t *area = args->area;
+    uint16_t *lvgl_fb = args->fb;
+
+    // ESP_LOGI(TAG, "Writing LCD section %d", section);
+    uint8_t command = 0x00;
+    uint16_t data[2] = { 0 };
+    spi_transaction_t transaction = { 0 };
+    // Calculate from x and y bounds
+    uint32_t bytes_written = ((area->x2 - area->x1) + 1) * ((area->y2 - area->y1) + 1) * 2;
+
+    esp_err_t ret;
+
+    // Set row address
+    command = 0x2B; // RASET
+    // Going y_start -> y_end
+    data[0] = (area->y1 >> 8) | (area->y1 << 8); // Fix endianness
+    data[1] = (area->y2 >> 8) | (area->y2 << 8); // Fix endianness
+    // Send command
+    transaction.tx_buffer = &command;
+    transaction.rx_buffer = NULL;
+    transaction.length = 8;
+    transaction.user = (void *)0; // D/C LOW
+    ret = spi_device_polling_transmit(spi, &transaction);
+    // Send data
+    ESP_ERROR_CHECK(ret);
+    transaction.tx_buffer = &data;
+    transaction.length = 32;
+    transaction.user = (void *)1; // D/C HIGH
+    ret = spi_device_polling_transmit(spi, &transaction);
+    ESP_ERROR_CHECK(ret);
+
+    // Set column address
+    command = 0x2A; // CASET
+    data[0] = (area->x1 >> 8) | (area->x1 << 8);
+    data[1] = (area->x2 >> 8) | (area->x2 << 8); // Fix endianness
+    // Send command
+    transaction.tx_buffer = &command;
+    transaction.rx_buffer = NULL;
+    transaction.length = 8;
+    transaction.user = (void *)0; // D/C LOW
+    ret = spi_device_polling_transmit(spi, &transaction);
+    // Send data
+    ESP_ERROR_CHECK(ret);
+    transaction.tx_buffer = &data;
+    transaction.length = 32;
+    transaction.user = (void *)1; // D/C HIGH
+    ret = spi_device_polling_transmit(spi, &transaction);
+    ESP_ERROR_CHECK(ret);
+
+    // Send framebuffer array
+    command = 0x2C; // RAMWR
+    // Send command
+    transaction.tx_buffer = &command;
+    transaction.rx_buffer = NULL;
+    transaction.length = 8;
+    transaction.user = (void *)0; // D/C LOW
+    ret = spi_device_polling_transmit(spi, &transaction);
+    // Send data
+    ESP_ERROR_CHECK(ret);
+    transaction.tx_buffer = &lcd_fb;
+    transaction.length = bytes_written * 8; // Length in bits
+    transaction.user = (void *)1; // D/C HIGH
+    ret = spi_device_queue_trans(spi, &transaction, portMAX_DELAY);
+    xSemaphoreTake(fb_flush_sem, portMAX_DELAY); // Block thread until transfer done
+    ESP_ERROR_CHECK(ret);
 
     // Tell LVGL that buffer is done flushing
     lv_display_flush_ready(lvgl_display);
 
+    // Done, end task
+    vTaskDelete(NULL);
     return;
 }
 
+void lvgl_flush_fb_cb(lv_display_t *disp, const lv_area_t *area, unsigned char *px_map) {
+
+    uint16_t *lvgl_fb = (uint16_t *)px_map;
+    
+    args.area = area;
+    args.fb = lvgl_fb;
+
+    // Create async task to flush FB
+    xTaskCreate(lvgl_flush_fb_task, "lvgl_flush_fb_task", 4096, &args, 1, &fb_flush_task_handle);
+
+    return;
+}
+
+void encoder_read_lvgl_cb(lv_indev_t *drv, lv_indev_data_t *data) {
+    // Read encoder
+    data->enc_diff = encoder_get_count();
+
+    data->state = (encoder_get_button_state_sticky() ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED);
+
+    return;
+}
 
 // Init sequence from LCD Wiki demo and https://github.com/prenticedavid/Adafruit_ST7796S_kbv/blob/master/Adafruit_ST7796S_kbv.cpp
 esp_err_t lcd_init() {
     esp_err_t ret;
+
+    // Create SPI semaphore
+    fb_flush_sem = xSemaphoreCreateBinary();
+    if(fb_flush_sem == NULL) {
+        ESP_LOGE(TAG, "Failed to create SPI semaphore");
+        return -1;
+    }
 
     /*******************************************
     * Initialize LCD hardware
@@ -295,10 +410,11 @@ esp_err_t lcd_init() {
 
     devcfg = {
         .mode = 0,                              // CPOL,CPHA = 0,0
-        .clock_speed_hz = 10 * 1000 * 1000,     // Clock out at 10 MHz, TODO: Check
+        .clock_speed_hz = 15 * 1000 * 1000,     // Max seems to be 15 MHz based on datasheet
         .spics_io_num = IO_LCD_CS0,             // CS pin
         .queue_size = 32,                        // Queue this many transactions at once
         .pre_cb = lcd_spi_pre_transfer_callback, // Specify pre-transfer callback to handle D/C line
+        .post_cb = lcd_transfer_done_cb,
     };
 
     // Do the thing
@@ -330,9 +446,12 @@ esp_err_t lcd_init() {
     // DISP_ON
     lcd_write({0x29, {}, 0});
 
+    lcd_fill_color(0xFFFF);
+
     /*******************************************
-    * Initialize LCD hardware
+    * Initialize LVGL
     ********************************************/
+
     lv_init(); // LVGL init
     lv_tick_set_cb(xTaskGetTickCount); // Set tick count cb
     lvgl_display = lv_display_create(LCD_WIDTH, LCD_HEIGHT);
@@ -340,6 +459,30 @@ esp_err_t lcd_init() {
     // Set FB and render in chunks
     lv_display_set_buffers(lvgl_display, lcd_fb, NULL, LCD_FB_SIZE_BYTES, LV_DISPLAY_RENDER_MODE_PARTIAL);
 
+    // Input encoder
+    lvgl_encoder_input = lv_indev_create();
+    lv_indev_set_type(lvgl_encoder_input, LV_INDEV_TYPE_ENCODER);
+    lv_indev_set_read_cb(lvgl_encoder_input, encoder_read_lvgl_cb);
+
+    // Create mutex for LVGL
+    lvgl_mutex = xSemaphoreCreateMutex();
+
+    // Force refresh
+    lv_refr_now(lvgl_display);
+
     // Done
     return 0;
+}
+
+// Display task
+void display_task(void *pvParameters) {
+    while(1) {
+        xSemaphoreTake(lvgl_mutex, portMAX_DELAY);
+        gpio_set_level(IO_LED_BLUE, 1);
+        int time_till_next_ms = lv_task_handler();
+        gpio_set_level(IO_LED_BLUE, 0);
+        xSemaphoreGive(lvgl_mutex);
+        vTaskDelay(time_till_next_ms / portTICK_PERIOD_MS);
+    }
+    return;
 }

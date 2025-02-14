@@ -9,6 +9,7 @@
 
 #include "driver/gpio.h"
 
+// LCD pins
 // Picked to be able to bypass IO matrix
 #define IO_LCD_DC GPIO_NUM_9
 #define IO_LCD_CS0 GPIO_NUM_10
@@ -17,5 +18,15 @@
 #define IO_LCD_MISO GPIO_NUM_13
 #define IO_LCD_RESET GPIO_NUM_14
 #define IO_LCD_LED GPIO_NUM_21
+
+// Rotary encoder
+#define IO_ENC_A GPIO_NUM_43
+#define IO_ENC_B GPIO_NUM_44
+#define IO_ENC_BUTTON GPIO_NUM_17
+
+// LEDs
+#define IO_LED_RED GPIO_NUM_46
+#define IO_LED_GREEN GPIO_NUM_47
+#define IO_LED_BLUE GPIO_NUM_48
 
 #endif
