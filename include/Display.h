@@ -12,6 +12,8 @@
 #include "driver/spi_master.h"
 #include "esp_log.h"
 
+#include "lvgl.h"
+
 #include "board_common.h"
 
 #include <cstring>

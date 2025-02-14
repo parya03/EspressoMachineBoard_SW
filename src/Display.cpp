@@ -28,6 +28,8 @@ gpio_config_t lcd_io_conf = {
 
 spi_device_handle_t spi;
 
+lv_display_t *lvgl_display;
+
 // LCD framebuffer
 DMA_ATTR uint16_t lcd_fb[20 * 480] = { 0 };
 DMA_ATTR uint8_t command;
@@ -65,7 +67,7 @@ DRAM_ATTR lcd_write_t lcd_init_list[] = {
     // {0xE1, {0xF0, 0x09, 0x13, 0x0C, 0x0D, 0x27, 0x3B, 0x44, 0x4D, 0x0B, 0x17, 0x17, 0x1D, 0x21}, 14},
     // {0x36, {0x48}, 1},
     {0xC5, {0x1C}, 1},
-    {0x36, {0x74}, 1}, // MADCTL
+    {0x36, {0x34}, 1}, // MADCTL
     {0x3A, {0x55}, 1},
     {0xB0, {0x80}, 1},
     {0xB4, {0x01}, 1},
@@ -102,63 +104,7 @@ static void lcd_write(lcd_write_t write_struct) {
     return;
 }
 
-// Init sequence from LCD Wiki demo and https://github.com/prenticedavid/Adafruit_ST7796S_kbv/blob/master/Adafruit_ST7796S_kbv.cpp
-esp_err_t lcd_init() {
-    esp_err_t ret;
 
-    // Initialize non-SPI GPIOs
-    gpio_config(&lcd_io_conf);
-
-    // Initialize SPI
-    buscfg = {
-        .mosi_io_num = IO_LCD_MOSI,
-        .miso_io_num = IO_LCD_MISO,
-        .sclk_io_num = IO_LCD_CLK,
-        .quadwp_io_num = -1,
-        .quadhd_io_num = -1,
-        .max_transfer_sz = LCD_FB_SIZE_BYTES,
-    };
-
-    devcfg = {
-        .mode = 0,                              // CPOL,CPHA = 0,0
-        .clock_speed_hz = 10 * 1000 * 1000,     // Clock out at 10 MHz, TODO: Check
-        .spics_io_num = IO_LCD_CS0,             // CS pin
-        .queue_size = 32,                        // Queue this many transactions at once
-        .pre_cb = lcd_spi_pre_transfer_callback, // Specify pre-transfer callback to handle D/C line
-    };
-
-    // Do the thing
-    ret = spi_bus_initialize(SPI2_HOST, &buscfg, SPI_DMA_CH_AUTO);
-    ESP_ERROR_CHECK(ret);
-    ret = spi_bus_add_device(SPI2_HOST, &devcfg, &spi);
-    ESP_ERROR_CHECK(ret);
-
-    // Init LCD
-
-    // HW reset LCD
-    gpio_set_level(IO_LCD_RESET, 0);
-    vTaskDelay(100 / portTICK_PERIOD_MS);
-    gpio_set_level(IO_LCD_RESET, 1);
-    vTaskDelay(100 / portTICK_PERIOD_MS);
-
-    spi_transaction_t transaction = { 0 };
-
-    uint8_t rx_data_buf[10] = { 0 };
-
-    // Write out init commands with delay between them
-    for(int i = 0; i < 14; i++) {
-        ESP_LOGI("LCD", "Writing command 0x%2X", lcd_init_list[i].cmd);
-        lcd_write(lcd_init_list[i]);
-        vTaskDelay(200 / portTICK_PERIOD_MS);
-    }
-
-    vTaskDelay(200 / portTICK_PERIOD_MS);
-    // DISP_ON
-    lcd_write({0x29, {}, 0});
-
-    // Done
-    return 0;
-}
 
 // LCD divided up into 320/20 = 16 sections to reduce FB size
 // because ESPIDF complains if trying to DMA a too big buffer
@@ -232,6 +178,72 @@ esp_err_t lcd_write_fb_ptr(int section, uint16_t *fb_ptr) {
     return 0;
 }
 
+esp_err_t lcd_write_fb_xy(uint32_t x1, uint32_t y1, uint32_t x2, uint32_t y2, uint16_t *fb_ptr) {
+    // ESP_LOGI(TAG, "Writing LCD section %d", section);
+    uint8_t command = 0x00;
+    uint16_t data[2] = { 0 };
+    spi_transaction_t transaction = { 0 };
+    // Calculate from x and y bounds
+    uint32_t bytes_written = ((x2 - x1) + 1) * ((y2 - y1) + 1) * 2;
+
+    esp_err_t ret;
+
+    // Set row address
+    command = 0x2B; // RASET
+    // Going y_start -> y_end
+    data[0] = (y1 >> 8) | (y1 << 8); // Fix endianness
+    data[1] = (y2 >> 8) | (y2 << 8); // Fix endianness
+    // Send command
+    transaction.tx_buffer = &command;
+    transaction.rx_buffer = NULL;
+    transaction.length = 8;
+    transaction.user = (void *)0; // D/C LOW
+    ret = spi_device_polling_transmit(spi, &transaction);
+    // Send data
+    ESP_ERROR_CHECK(ret);
+    transaction.tx_buffer = &data;
+    transaction.length = 32;
+    transaction.user = (void *)1; // D/C HIGH
+    ret = spi_device_polling_transmit(spi, &transaction);
+    ESP_ERROR_CHECK(ret);
+
+    // Set column address
+    command = 0x2A; // CASET
+    data[0] = (x1 >> 8) | (x1 << 8);
+    data[1] = (x2 >> 8) | (x2 << 8); // Fix endianness
+    // Send command
+    transaction.tx_buffer = &command;
+    transaction.rx_buffer = NULL;
+    transaction.length = 8;
+    transaction.user = (void *)0; // D/C LOW
+    ret = spi_device_polling_transmit(spi, &transaction);
+    // Send data
+    ESP_ERROR_CHECK(ret);
+    transaction.tx_buffer = &data;
+    transaction.length = 32;
+    transaction.user = (void *)1; // D/C HIGH
+    ret = spi_device_polling_transmit(spi, &transaction);
+    ESP_ERROR_CHECK(ret);
+
+    // Send framebuffer array
+    command = 0x2C; // RAMWR
+    // Send command
+    transaction.tx_buffer = &command;
+    transaction.rx_buffer = NULL;
+    transaction.length = 8;
+    transaction.user = (void *)0; // D/C LOW
+    ret = spi_device_polling_transmit(spi, &transaction);
+    // Send data
+    ESP_ERROR_CHECK(ret);
+    transaction.tx_buffer = &lcd_fb;
+    transaction.length = bytes_written * 8; // Length in bits
+    transaction.user = (void *)1; // D/C HIGH
+    ret = spi_device_polling_transmit(spi, &transaction);
+    ESP_ERROR_CHECK(ret);
+
+    return 0;
+}
+
 // 16-bit color
 // Overwrites FB with color
 esp_err_t lcd_fill_color(uint16_t color) {
@@ -245,5 +257,89 @@ esp_err_t lcd_fill_color(uint16_t color) {
         lcd_write_fb_ptr(i, lcd_fb);
     }
 
+    return 0;
+}
+
+void lvgl_flush_fb_cb(lv_display_t *disp, const lv_area_t *area, unsigned char *px_map) {
+
+    uint16_t *lvgl_fb = (uint16_t *)px_map;
+    lcd_write_fb_xy(area->x1, area->y1, area->x2, area->y2, lvgl_fb);
+
+    // Tell LVGL that buffer is done flushing
+    lv_display_flush_ready(lvgl_display);
+
+    return;
+}
+
+
+// Init sequence from LCD Wiki demo and https://github.com/prenticedavid/Adafruit_ST7796S_kbv/blob/master/Adafruit_ST7796S_kbv.cpp
+esp_err_t lcd_init() {
+    esp_err_t ret;
+
+    /*******************************************
+    * Initialize LCD hardware
+    ********************************************/
+
+    // Initialize non-SPI GPIOs
+    gpio_config(&lcd_io_conf);
+
+    // Initialize SPI
+    buscfg = {
+        .mosi_io_num = IO_LCD_MOSI,
+        .miso_io_num = IO_LCD_MISO,
+        .sclk_io_num = IO_LCD_CLK,
+        .quadwp_io_num = -1,
+        .quadhd_io_num = -1,
+        .max_transfer_sz = LCD_FB_SIZE_BYTES,
+    };
+
+    devcfg = {
+        .mode = 0,                              // CPOL,CPHA = 0,0
+        .clock_speed_hz = 10 * 1000 * 1000,     // Clock out at 10 MHz, TODO: Check
+        .spics_io_num = IO_LCD_CS0,             // CS pin
+        .queue_size = 32,                        // Queue this many transactions at once
+        .pre_cb = lcd_spi_pre_transfer_callback, // Specify pre-transfer callback to handle D/C line
+    };
+
+    // Do the thing
+    ret = spi_bus_initialize(SPI2_HOST, &buscfg, SPI_DMA_CH_AUTO);
+    ESP_ERROR_CHECK(ret);
+    ret = spi_bus_add_device(SPI2_HOST, &devcfg, &spi);
+    ESP_ERROR_CHECK(ret);
+
+    // Init LCD
+
+    // HW reset LCD
+    gpio_set_level(IO_LCD_RESET, 0);
+    vTaskDelay(100 / portTICK_PERIOD_MS);
+    gpio_set_level(IO_LCD_RESET, 1);
+    vTaskDelay(100 / portTICK_PERIOD_MS);
+
+    spi_transaction_t transaction = { 0 };
+
+    uint8_t rx_data_buf[10] = { 0 };
+
+    // Write out init commands with delay between them
+    for(int i = 0; i < 14; i++) {
+        ESP_LOGI("LCD", "Writing command 0x%2X", lcd_init_list[i].cmd);
+        lcd_write(lcd_init_list[i]);
+        vTaskDelay(200 / portTICK_PERIOD_MS);
+    }
+
+    vTaskDelay(200 / portTICK_PERIOD_MS);
+    // DISP_ON
+    lcd_write({0x29, {}, 0});
+
+    /*******************************************
+    * Initialize LCD hardware
+    ********************************************/
+    lv_init(); // LVGL init
+    lv_tick_set_cb(xTaskGetTickCount); // Set tick count cb
+    lvgl_display = lv_display_create(LCD_WIDTH, LCD_HEIGHT);
+    lv_display_set_flush_cb(lvgl_display, lvgl_flush_fb_cb);
+    // Set FB and render in chunks
+    lv_display_set_buffers(lvgl_display, lcd_fb, NULL, LCD_FB_SIZE_BYTES, LV_DISPLAY_RENDER_MODE_PARTIAL);
+
+    // Done
     return 0;
 }
