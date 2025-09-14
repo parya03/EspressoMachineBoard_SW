@@ -29,4 +29,11 @@
 #define IO_LED_GREEN GPIO_NUM_47
 #define IO_LED_BLUE GPIO_NUM_48
 
+// Pump and boiler SSR
+#define IO_PUMP GPIO_NUM_6
+#define IO_BOILER GPIO_NUM_7
+
+// Thermistor measurement
+#define IO_THERMISTOR GPIO_NUM_2
+
 #endif

@@ -1,7 +1,11 @@
 #include "driver/gpio.h"
 #include "driver/spi_common.h"
 #include "driver/spi_master.h"
+#include "esp_adc/adc_oneshot.h"
+#include "esp_adc/adc_cali.h"
+#include "esp_adc/adc_cali_scheme.h"
 #include "esp_log.h"
+#include <math.h>
 
 #include "lvgl.h"
 
@@ -19,6 +23,24 @@ extern "C" {
 // LED IO
 gpio_config_t led_io_conf = {
     .pin_bit_mask = ((1ULL << IO_LED_RED) | (1ULL << IO_LED_BLUE)),
+    .mode = GPIO_MODE_OUTPUT,
+    .pull_up_en = (gpio_pullup_t)GPIO_PULLUP_DISABLE,
+    .pull_down_en = (gpio_pulldown_t)GPIO_PULLDOWN_DISABLE,
+    .intr_type = GPIO_INTR_DISABLE,
+};
+
+// Boiler IO
+gpio_config_t boiler_io_conf = {
+    .pin_bit_mask = ((1ULL << IO_BOILER)),
+    .mode = GPIO_MODE_OUTPUT,
+    .pull_up_en = (gpio_pullup_t)GPIO_PULLUP_DISABLE,
+    .pull_down_en = (gpio_pulldown_t)GPIO_PULLDOWN_DISABLE,
+    .intr_type = GPIO_INTR_DISABLE,
+};
+
+// Pump IO
+gpio_config_t pump_io_conf = {
+    .pin_bit_mask = ((1ULL << IO_PUMP)),
     .mode = GPIO_MODE_OUTPUT,
     .pull_up_en = (gpio_pullup_t)GPIO_PULLUP_DISABLE,
     .pull_down_en = (gpio_pulldown_t)GPIO_PULLDOWN_DISABLE,
@@ -45,6 +67,39 @@ static void btn_event_cb(lv_event_t * e)
         gpio_set_level(IO_LED_RED, (led_state));
         // gpio_set_level(IO_LED_BLUE, (led_state));
 
+        // TEST
+        // TEST: Turn on and off boiler SSR with LED
+        gpio_set_level(IO_BOILER, led_state);
+        gpio_set_level(IO_PUMP, led_state);
+
+    }
+}
+
+adc_oneshot_unit_handle_t adc1_handle = NULL;
+adc_cali_handle_t adc1_cali_handle = NULL;
+
+void temp_measure_task(void *pvParameters) {
+    int therm_raw = 0;
+    int therm_mV = 0;
+    float temp_prev = 0.0f;
+
+    // Measure thermistor and output on serial
+    while(1) {
+        ESP_ERROR_CHECK(adc_oneshot_read(adc1_handle, ADC_CHANNEL_1, &therm_raw));
+        ESP_ERROR_CHECK(adc_cali_raw_to_voltage(adc1_cali_handle, therm_raw, &therm_mV));
+
+        // Calculate temp
+        // Find resistance based off of reference voltage output (measured as 2.601v)
+        float resistance = ((2.601f * 10000.0f) / (float)(therm_mV/1000.0f)) - 10000.0f;
+
+        // Playing with data for a 100k NTC thermistor in Desmos gives this weird regression as best (for above 40C):
+        // 44.81207 + -0.000144689x + 110.23167*e^(-0.000103527 * x)
+        float temp = 44.81207f + (-0.000144689f * resistance) + (110.23167f * exp(-0.000103527f * resistance));
+
+        ESP_LOGI("ADC", "Thermistor measured at raw=%d = %d mV, R=%f Ohms, Temp=%f C, dTemp = %f", therm_raw, therm_mV, resistance, temp, (temp - temp_prev));
+        temp_prev = temp;
+
+        vTaskDelay(500 / portTICK_PERIOD_MS);
     }
 }
 
@@ -59,8 +114,36 @@ void app_main() {
     //     lcd_fb[i] = 0x001F;
     // }
 
-
     gpio_config(&led_io_conf);
+    gpio_config(&boiler_io_conf);
+    gpio_config(&pump_io_conf);
+    
+    // ADC1 Init
+    adc_oneshot_unit_init_cfg_t init_config1 = {
+        .unit_id = ADC_UNIT_1,
+    };
+    ESP_ERROR_CHECK(adc_oneshot_new_unit(&init_config1, &adc1_handle));
+
+    // ADC1 Config
+    adc_oneshot_chan_cfg_t adc1_config = {
+        .atten = ADC_ATTEN_DB_12,
+        .bitwidth = ADC_BITWIDTH_DEFAULT,
+    };
+    ESP_ERROR_CHECK(adc_oneshot_config_channel(adc1_handle, ADC_CHANNEL_1, &adc1_config));
+
+    // ADC1 Calibration
+    ESP_LOGI("", "Calibrating ADC1 Channel 1 (thermistor)...");
+    adc_cali_curve_fitting_config_t cali_config = {
+        .unit_id = ADC_UNIT_1,
+        .chan = ADC_CHANNEL_1,
+        .atten = ADC_ATTEN_DB_12,
+        .bitwidth = ADC_BITWIDTH_DEFAULT,
+    };
+    ret = adc_cali_create_scheme_curve_fitting(&cali_config, &adc1_cali_handle);
+    // if (ret == ESP_OK) {
+    //     calibrated = true;
+    // }
+
     encoder_init();
     lcd_init();
 
@@ -78,7 +161,16 @@ void app_main() {
     lv_indev_set_group(lvgl_encoder_input, group);
 
     // LVGL refresh pinned to second core
+    xTaskCreate(temp_measure_task, "temp_measure_task", 10240, NULL, 10, NULL);
     xTaskCreatePinnedToCore(display_task, "display_task", 10240, NULL, 10, NULL, 1);
+
+    // TEST: Turn on and off boiler SSR
+    // while(1) {
+    //     gpio_set_level(IO_BOILER, 0);
+    //     vTaskDelay(1000 / portTICK_PERIOD_MS);
+    //     gpio_set_level(IO_BOILER, 1);
+    //     vTaskDelay(1000 / portTICK_PERIOD_MS);
+    // }
 
     // Return from this thread
     vTaskDelete(NULL);

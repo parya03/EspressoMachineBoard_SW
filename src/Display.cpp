@@ -446,7 +446,7 @@ esp_err_t lcd_init() {
     // DISP_ON
     lcd_write({0x29, {}, 0});
 
-    lcd_fill_color(0xFFFF);
+    lcd_fill_color(0x0000);
 
     /*******************************************
     * Initialize LVGL
