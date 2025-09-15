@@ -87,6 +87,8 @@ void temp_measure_task(void *pvParameters) {
     while(1) {
         ESP_ERROR_CHECK(adc_oneshot_read(adc1_handle, ADC_CHANNEL_1, &therm_raw));
         ESP_ERROR_CHECK(adc_cali_raw_to_voltage(adc1_cali_handle, therm_raw, &therm_mV));
+        
+        therm_mV += 15; // Experimentally determined to generally be measured as ~15mV lower than actual (multimeter reference)
 
         // Calculate temp
         // Find resistance based off of reference voltage output (measured as 2.601v)
