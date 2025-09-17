@@ -79,26 +79,35 @@ adc_oneshot_unit_handle_t adc1_handle = NULL;
 adc_cali_handle_t adc1_cali_handle = NULL;
 
 void temp_measure_task(void *pvParameters) {
-    int therm_raw = 0;
+    float therm_raw_avg = 0;
     int therm_mV = 0;
     float temp_prev = 0.0f;
 
     // Measure thermistor and output on serial
     while(1) {
-        ESP_ERROR_CHECK(adc_oneshot_read(adc1_handle, ADC_CHANNEL_1, &therm_raw));
-        ESP_ERROR_CHECK(adc_cali_raw_to_voltage(adc1_cali_handle, therm_raw, &therm_mV));
-        
-        therm_mV += 15; // Experimentally determined to generally be measured as ~15mV lower than actual (multimeter reference)
+        for(int i = 0; i < 100; i++) {
+            int therm_raw = 0;
+            ESP_ERROR_CHECK(adc_oneshot_read(adc1_handle, ADC_CHANNEL_1, &therm_raw));
+
+            therm_raw_avg += therm_raw;
+            // ESP_ERROR_CHECK(adc_cali_raw_to_voltage(adc1_cali_handle, therm_raw, &therm_mV));
+
+            // therm_mV += 30; // Experimentally determined to generally be measured as ~30mV lower than actual (multimeter reference)
+        }
+
+        therm_raw_avg /= 100.0f;
 
         // Calculate temp
         // Find resistance based off of reference voltage output (measured as 2.601v)
-        float resistance = ((2.601f * 10000.0f) / (float)(therm_mV/1000.0f)) - 10000.0f;
+        // float resistance = ((2.601f * 10000.0f) / (float)(therm_mV/1000.0f)) - 10000.0f;
+        // Exponential regression (experimental) based off of raw ADC values seems to work well
+        float resistance_kohms = (184.9902f*exp(-0.00371704f*therm_raw_avg)+15.55841f);
 
         // Playing with data for a 100k NTC thermistor in Desmos gives this weird regression as best (for above 40C):
         // 44.81207 + -0.000144689x + 110.23167*e^(-0.000103527 * x)
-        float temp = 44.81207f + (-0.000144689f * resistance) + (110.23167f * exp(-0.000103527f * resistance));
+        float temp = 154.1806f + (-69.60769f * log10(resistance_kohms)) + (0.0740364f * resistance_kohms);
 
-        ESP_LOGI("ADC", "Thermistor measured at raw=%d = %d mV, R=%f Ohms, Temp=%f C, dTemp = %f", therm_raw, therm_mV, resistance, temp, (temp - temp_prev));
+        ESP_LOGI("ADC", "Thermistor measured at raw=%f = %d mV, R=%f kOhms, Temp=%f C, dTemp = %f", therm_raw_avg, therm_mV, resistance_kohms, temp, (temp - temp_prev));
         temp_prev = temp;
 
         vTaskDelay(500 / portTICK_PERIOD_MS);
