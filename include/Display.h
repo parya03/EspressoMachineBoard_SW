@@ -13,6 +13,7 @@
 #include "esp_log.h"
 
 #include "lvgl.h"
+#include "ui.h"
 
 #include "board_common.h"
 #include "Interface.h"

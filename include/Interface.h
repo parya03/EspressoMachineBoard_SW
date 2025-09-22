@@ -21,6 +21,9 @@ esp_err_t encoder_init();
 // Get count since last call
 int encoder_get_count();
 
+// Get count since beginning
+int64_t encoder_get_count_total();
+
 // Get button status
 // ISR sets variable state on any edge
 bool encoder_get_button_state();

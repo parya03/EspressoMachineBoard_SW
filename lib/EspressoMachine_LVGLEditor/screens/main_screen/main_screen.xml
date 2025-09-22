@@ -1,0 +1,27 @@
+<screen permanent="true">
+    <styles>
+        <style name="main" pad_all="0" border_width="0" radius="0" layout="flex" flex_flow="column" pad_row="0" />
+    </styles>
+
+    <view width="100%" height="100%">
+        <style name="main" />
+        <row name="row">
+            <column name="col1">
+                <lv_bar height="25">
+                    <!-- <screen_create_event screen="about" anim_type="fade_on" duration="500"/> -->
+                    <!-- <event_cb callback="about_click_event_cb" trigger="clicked" /> -->
+                </lv_bar>
+                <lv_label name="curr_brew_time_elapsed"/>
+                <lv_label name="curr_water_temp"/>
+                <lv_label name="set_temp"/>
+            </column>
+
+            <column name="col2">
+                <lv_button name="brew_button">
+                    <lv_label text="Brew" />
+                    <event_cb callback="brew_click_cb" trigger="clicked" />
+                </lv_button>
+            </column>
+        </row>
+    </view>
+</screen>

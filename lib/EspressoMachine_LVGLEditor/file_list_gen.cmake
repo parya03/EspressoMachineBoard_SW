@@ -1,0 +1,9 @@
+list(
+  APPEND
+  PROJECT_SOURCES
+  ${CMAKE_CURRENT_LIST_DIR}/components/column/column_gen.c
+  ${CMAKE_CURRENT_LIST_DIR}/components/row/row_gen.c
+  ${CMAKE_CURRENT_LIST_DIR}/screens/main_screen/main_screen_gen.c
+  ${CMAKE_CURRENT_LIST_DIR}/EspressoMachine_LVGLEditor_gen.c
+  ${CMAKE_CURRENT_LIST_DIR}/ui.c
+  ${CMAKE_CURRENT_LIST_DIR}/EspressoMachine_LVGLEditor.c)

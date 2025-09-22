@@ -21,16 +21,22 @@ static pcnt_unit_config_t encoder_unit_struct = {
 
 static pcnt_unit_handle_t encoder_handle;
 
-static pcnt_channel_handle_t encoder_channel;
+static pcnt_channel_handle_t encoder_channel_a;
+static pcnt_channel_handle_t encoder_channel_b;
 
 // Debounce filter
 static pcnt_glitch_filter_config_t glitch_filter = {
     .max_glitch_ns = 1000,
 };
 
-static pcnt_chan_config_t encoder_channel_config = {
+static pcnt_chan_config_t encoder_channel_config_a = {
     .edge_gpio_num = IO_ENC_A,
     .level_gpio_num = IO_ENC_B,
+};
+
+static pcnt_chan_config_t encoder_channel_config_b = {
+    .edge_gpio_num = IO_ENC_B,
+    .level_gpio_num = IO_ENC_A,
 };
 
 // Encoder button
@@ -57,11 +63,19 @@ esp_err_t encoder_init() {
     // Init encoder rotation counter
     ret = pcnt_new_unit(&encoder_unit_struct, &encoder_handle);
     ESP_ERROR_CHECK(ret);
-    ret = pcnt_new_channel(encoder_handle, &encoder_channel_config, &encoder_channel);
+    ret = pcnt_unit_set_glitch_filter(encoder_handle, &glitch_filter);
     ESP_ERROR_CHECK(ret);
-    ret = pcnt_channel_set_edge_action(encoder_channel, PCNT_CHANNEL_EDGE_ACTION_DECREASE, PCNT_CHANNEL_EDGE_ACTION_INCREASE);
+    ret = pcnt_new_channel(encoder_handle, &encoder_channel_config_a, &encoder_channel_a);
     ESP_ERROR_CHECK(ret);
-    ret = pcnt_channel_set_level_action(encoder_channel, PCNT_CHANNEL_LEVEL_ACTION_KEEP, PCNT_CHANNEL_LEVEL_ACTION_INVERSE);
+    // ret = pcnt_new_channel(encoder_handle, &encoder_channel_config_b, &encoder_channel_b);
+    // ESP_ERROR_CHECK(ret);
+    ret = pcnt_channel_set_edge_action(encoder_channel_a, PCNT_CHANNEL_EDGE_ACTION_DECREASE, PCNT_CHANNEL_EDGE_ACTION_INCREASE);
+    ESP_ERROR_CHECK(ret);
+    ret = pcnt_channel_set_level_action(encoder_channel_a, PCNT_CHANNEL_LEVEL_ACTION_KEEP, PCNT_CHANNEL_LEVEL_ACTION_INVERSE);
+    ESP_ERROR_CHECK(ret);
+    // ret = pcnt_channel_set_edge_action(encoder_channel_b, PCNT_CHANNEL_EDGE_ACTION_INCREASE, PCNT_CHANNEL_EDGE_ACTION_DECREASE);
+    // ESP_ERROR_CHECK(ret);
+    // ret = pcnt_channel_set_level_action(encoder_channel_b, PCNT_CHANNEL_LEVEL_ACTION_KEEP, PCNT_CHANNEL_LEVEL_ACTION_INVERSE);
     ESP_ERROR_CHECK(ret);
     ret = pcnt_unit_enable(encoder_handle);
     ESP_ERROR_CHECK(ret);
@@ -82,15 +96,29 @@ esp_err_t encoder_init() {
 }
 
 // Return count since last check
+static int64_t last_check_count = 0;
 int encoder_get_count() {
-    int ret;
-    int count;
-    ret = pcnt_unit_get_count(encoder_handle, &count);
+    int64_t curr = encoder_get_count_total();
+    int64_t ret = curr - last_check_count;
+
+    last_check_count = curr;
+
+    return (int)ret;
+}
+
+static int64_t global_encoder_count = 0;
+// Return total turns done by encoder
+int64_t encoder_get_count_total() {
+    int ret = 0;
+    int curr_count = 0;
+    ret = pcnt_unit_get_count(encoder_handle, &curr_count);
     ESP_ERROR_CHECK(ret);
     ret = pcnt_unit_clear_count(encoder_handle);
     ESP_ERROR_CHECK(ret);
 
-    return count;
+    global_encoder_count += (curr_count / 2);
+
+    return global_encoder_count;
 }
 
 bool encoder_get_button_state() {

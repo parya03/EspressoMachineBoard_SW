@@ -189,6 +189,9 @@ esp_err_t lcd_write_fb_ptr(int section, uint16_t *fb_ptr) {
     transaction.length = LCD_FB_SIZE_BYTES * 8; // Length in bits
     transaction.user = (void *)1; // D/C HIGH
     ret = spi_device_polling_transmit(spi, &transaction);
+    if(ret != ESP_OK) {
+        ESP_LOGE("Display", "Error writing display framebuffer - Tx length (bits): %d, Max Tx length (bits): %d", transaction.length, LCD_FB_SIZE_BYTES * 8);
+    }
     ESP_ERROR_CHECK(ret);
 
     return 0;
@@ -277,14 +280,14 @@ esp_err_t lcd_fill_color(uint16_t color) {
 }
 
 struct Args {
-    const lv_area_t *area;
+    lv_area_t area;
     uint16_t *fb;
 } args;
 
 // FB flush FreeRTOS task
 void lvgl_flush_fb_task(void *pvParameters) {
     struct Args *args = (struct Args *)pvParameters;
-    const lv_area_t *area = args->area;
+    const lv_area_t *area = &(args->area);
     uint16_t *lvgl_fb = args->fb;
 
     // ESP_LOGI(TAG, "Writing LCD section %d", section);
@@ -348,6 +351,9 @@ void lvgl_flush_fb_task(void *pvParameters) {
     transaction.user = (void *)1; // D/C HIGH
     ret = spi_device_queue_trans(spi, &transaction, portMAX_DELAY);
     xSemaphoreTake(fb_flush_sem, portMAX_DELAY); // Block thread until transfer done
+    if(ret != ESP_OK) {
+        ESP_LOGE("Display", "Error writing display framebuffer - X1: %ld, X2: %ld, Y1: %ld, Y2: %ld, Tx length (bits): %d, Max Tx length (bits): %d", area->x1, area->x2, area->y1, area->y2, transaction.length, LCD_FB_SIZE_BYTES * 8);
+    }
     ESP_ERROR_CHECK(ret);
 
     // Tell LVGL that buffer is done flushing
@@ -362,7 +368,8 @@ void lvgl_flush_fb_cb(lv_display_t *disp, const lv_area_t *area, unsigned char *
 
     uint16_t *lvgl_fb = (uint16_t *)px_map;
     
-    args.area = area;
+    // ESP_LOGI("Display", "Writing display framebuffer - X1: %ld, X2: %ld, Y1: %ld, Y2: %ld", area->x1, area->x2, area->y1, area->y2);
+    args.area = *area;
     args.fb = lvgl_fb;
 
     // Create async task to flush FB
@@ -379,6 +386,8 @@ void encoder_read_lvgl_cb(lv_indev_t *drv, lv_indev_data_t *data) {
 
     return;
 }
+
+extern lv_obj_t *main_screen;
 
 // Init sequence from LCD Wiki demo and https://github.com/prenticedavid/Adafruit_ST7796S_kbv/blob/master/Adafruit_ST7796S_kbv.cpp
 esp_err_t lcd_init() {
@@ -458,27 +467,50 @@ esp_err_t lcd_init() {
     lv_display_set_flush_cb(lvgl_display, lvgl_flush_fb_cb);
     // Set FB and render in chunks
     lv_display_set_buffers(lvgl_display, lcd_fb, NULL, LCD_FB_SIZE_BYTES, LV_DISPLAY_RENDER_MODE_PARTIAL);
-
+    
     // Input encoder
     lvgl_encoder_input = lv_indev_create();
     lv_indev_set_type(lvgl_encoder_input, LV_INDEV_TYPE_ENCODER);
     lv_indev_set_read_cb(lvgl_encoder_input, encoder_read_lvgl_cb);
-
+    
     // Create mutex for LVGL
     lvgl_mutex = xSemaphoreCreateMutex();
+    
+    // Init UI
+    ui_init("");
+    ESP_LOGI("Display", "Main Screen %X", (unsigned int)main_screen);
+    lv_screen_load(main_screen);
 
     // Force refresh
-    lv_refr_now(lvgl_display);
+    // lv_refr_now(lvgl_display);
 
     // Done
     return 0;
 }
 
+extern float curr_temp;
+extern float setpoint;
+// extern lv_obj_t* curr_temp_bar;
+// extern lv_obj_t* set_temp_bar;
+
+// static void bar_set_value(void * bar, int32_t v)
+// {
+//     lv_bar_set_value((lv_obj_t *)bar, v, LV_ANIM_OFF);
+// }
+
 // Display task
 void display_task(void *pvParameters) {
+    auto curr_temp_label = lv_obj_find_by_name(main_screen, "curr_water_temp");
+    auto set_temp_label = lv_obj_find_by_name(main_screen, "set_temp");
     while(1) {
         xSemaphoreTake(lvgl_mutex, portMAX_DELAY);
         gpio_set_level(IO_LED_BLUE, 1);
+
+        // bar_set_value(curr_temp_bar, curr_temp);
+        // bar_set_value(set_temp_bar, setpoint);
+        lv_label_set_text_fmt(curr_temp_label, "Curr temp: %f C", curr_temp);
+        lv_label_set_text_fmt(set_temp_label, "Set temp: %f C", setpoint);
+
         int time_till_next_ms = lv_task_handler();
         gpio_set_level(IO_LED_BLUE, 0);
         xSemaphoreGive(lvgl_mutex);
