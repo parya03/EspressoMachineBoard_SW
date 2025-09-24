@@ -14,6 +14,9 @@
                 <lv_label name="curr_brew_time_elapsed"/>
                 <lv_label name="curr_water_temp"/>
                 <lv_label name="set_temp"/>
+                <lv_chart name="temperature_chart" point_count="50" width="300" height="200">
+                    <lv_scale name="brew_temp_chart_scale" mode="vertical_left" height="100%" x="-110"></lv_scale>
+                </lv_chart>
             </column>
 
             <column name="col2">

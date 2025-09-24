@@ -19,7 +19,7 @@ gpio_config_t boiler_io_conf = {
     .intr_type = GPIO_INTR_DISABLE,
 };
 
-float setpoint = 27.0f; // Degrees C
+float setpoint = 0.0f; // Degrees C
 float curr_temp = 100.0f; // Start high by default for safety
 
 void control_init() {
@@ -84,6 +84,9 @@ void temp_control_task(void *pvParameters) {
     float prev_e = 0; // Used for derivative
     float d_e = 0; // Derivative
 
+    // MPC state variables
+    float curr_energy = 0.0f; // Current energy in the thermoblock
+
     // Measure thermistor and output on serial
     while(1) {
         for(int i = 0; i < 100; i++) {
@@ -132,35 +135,99 @@ void temp_control_task(void *pvParameters) {
         // Now try treating it as an integrating process
 
         // The response time is massive because we are controlling the temp of a large chunk of metal.
+        // ~5 sec to see any chage, ~20 sec for max change - heat equation
         // We should use the derivative to see what the temp is going to look like in ~10 seconds,
         // and if it will overshoot, then reduce control output
         float e = setpoint - curr_temp;
         float p = (2 * e);
         float i = (0 * int_e);
-        float d = (12 * d_e);
-        // if(d > 0.0f) {
-        //     d = 0.0f;
-        // }
+        float d = (8 * d_e);
+        // // if(d > 0.0f) {
+        // //     d = 0.0f;
+        // // }
+        // extern uint8_t brew_state;
+        // extern uint8_t pump_state;
         float kc = 2; // Controller gain
-        int u = (int)(kc * (e + i + d));
+        // int u = (int)(kc * (e + i + d));
 
-        // Given in Series/Interactive form for Ziegler-Nichols tuning
-        // float e = setpoint - temp;
-        // float p = (1 * e);
-        // float i = (0.033333 * int_e); // 1/30 * int_e
-        // float d = (7.5 * d_e);
-        // float kc = 1.6371; // Controller gain
-        // int u = (int)(kc * (e + i) * (1 + d)); // Must go 0 - 60 for phase
+        // // Given in Series/Interactive form for Ziegler-Nichols tuning
+        // // float e = setpoint - temp;
+        // // float p = (1 * e);
+        // // float i = (0.033333 * int_e); // 1/30 * int_e
+        // // float d = (7.5 * d_e);
+        // // float kc = 1.6371; // Controller gain
+        // // int u = (int)(kc * (e + i) * (1 + d)); // Must go 0 - 60 for phase
 
-        int_e += (e * (PID_TIME_MS / 1000.0f));
-        d_e = (e - prev_e) * (1000.0f / PID_TIME_MS); // Derivative in degrees C/s
+        // int_e += (e * (PID_TIME_MS / 1000.0f));
+        // d_e = (e - prev_e) * (1000.0f / PID_TIME_MS); // Derivative in degrees C/s
         
-        // Bounds check control values
-        // int_e = (int_e > 200) ? 200 : (int_e < -200) ? -200 : int_e;
+        // // Bounds check control values
+        // // int_e = (int_e > 200) ? 200 : (int_e < -200) ? -200 : int_e;
 
-        prev_e = e;
+        // prev_e = e;
+        int u = 0;
+        if(curr_temp < setpoint) {
+            u = 60;
+        }
+        // MPC - Model Predictive Control
+        // We use a model of the system to predict what the state will be later on and use that to control
+        // Temperature measurement follows logistic function:
+        // x[n] = (energy / 550 J/C)*(e^(0.125(n-50)))/(1+e^(0.125(n-50)))
+        // Where N is in HALF SECONDS
+        float U[MCP_N] = { 0.0f }; // Array of predicted future control inputs
+        float X[MCP_N] = { curr_temp }; // Predicted future energy states where X[0] is current state
+        
+        // TODO measure energy better
+        float setpoint_energy_error = (setpoint - curr_temp) * 550.0f; // How much more energy we need to dump into thermoblock to meet setpoint
 
-        u = (u < 0) ? 0 : (u > 60) ? 60 : u; // Bounds checking
+        // Max 500 gradient descent runs (in case it doesn't fully converge, don't hold up the loop)
+        // for(int i = 0; i < 500; i++) {
+        //     // Calculate control's effect on X
+        //     for(auto U_n = 0; U_n < MCP_N; U_n++) {
+        //         float u = U[U_n];
+        //         // Each control input will put energy into the system, which shows up as a temperature increase somewhere down the line
+        //         // The temperature change for each energy input shows up as the logistic function above
+        //         // Start at 1 since that's the next state
+        //         for(int n = 1; n < (float)MCP_N-U_n; n++) {
+        //             X[n] += ((u/60) / 550.0f)*(exp(0.125f*(n-50.0f)))/(1+exp(0.125f*(n-50.0f)));
+        //         }
+        //     }
+        //     for(int n = 1; n < MCP_N; n++) {
+        //         X[n] -= 10*n; // Loss of 20 J/s from radiation etc, n = 0.5s
+        //     }
+
+        //     // Calculate loss function (MSE)
+        //     float V_n = 0.0f;
+        //     for(auto x : X) {
+        //         V_n += powf(x - setpoint, 2);
+        //     }
+        //     V_n /= 2.0f * (float)MCP_N; // 1/2N to make gradient easier to compute
+
+        //     // Update control inputs to minimize loss
+        //     // Based off of gradient of MSE
+        //     for(int n = 0; n < MCP_N; n++) {
+        //         U[n] = U[n] - (MCP_GD_A * (2.0f * U[n] - setpoint));
+        //     }
+        // }
+
+        // Based off model, calculate control sequence to minimize MSE
+        for(int n = 0; n < MCP_N; n++) {
+            float V_n = 0.0f;
+            for(auto x : X) {
+                V_n += powf(x - setpoint, 2);
+            }
+            V_n /= 2.0f * (float)MCP_N; // 1/2N to make gradient easier to compute
+
+            // Gradient: (x(n) - r) / N for all n in
+            
+        }
+
+
+        
+        // u = (u < 0) ? 0 : (u > 60) ? 60 : u; // Bounds checking
+        // // u += ((brew_state && pump_state) * 60); // Take into account brew/pump state to compensate for cold water being pumped into boiler
+        // u = (u < 0) ? 0 : (u > 60) ? 60 : u; // Bounds checking
+
         // ESP_LOGI("Temp PID", "y(t)=%f, e(t)=%f, u(t)=%f, P=%f, I=%f, D=%f, int_e=%f, d_e=%f", temp, e, u, p, i, d, int_e, d_e);
 
         ESP_LOGI("Temp PID", "t=%lu, r(t)=%f, y(t)=%f, e(t)=%f, u(t)=%d phases, resistance=%f kohms, raw ADC=%f, P=%f, I=%f, D=%f, Kc=%f, int_e=%f, d_e=%f", (uint32_t)pdTICKS_TO_MS(xTaskGetTickCount()), setpoint, curr_temp, e, u, resistance_kohms, therm_raw_avg, p, i, d, kc, int_e, d_e);

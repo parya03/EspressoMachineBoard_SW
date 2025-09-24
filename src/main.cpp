@@ -38,29 +38,43 @@ gpio_config_t pump_io_conf = {
 
 uint8_t led_state = 0;
 uint8_t brew_state = 0;
+uint8_t pump_state = 0;
+
+uint32_t tick_brew_started = 0; // Keep track of time
 
 // Start brewing
 void brew_task(void *pvParameters) {
     // Set boiler to 93 C (Brew temp)
-    setpoint = 93.0f;
+    setpoint = 95.0f; // Slightly higher so it gets there quicker
+    vTaskDelay(5000 / portTICK_PERIOD_MS);
+    setpoint = 20.0f; // Slightly higher so it gets there quicker
 
-    // Wait for it to heat
-    while(curr_temp <= 92.0f) {
-        vTaskDelay(1000 / portTICK_PERIOD_MS);
-    }
+    // // Wait for it to heat
+    // while(curr_temp <= 93.0) {
+    //     vTaskDelay(1000 / portTICK_PERIOD_MS);
+    // }
 
-    // When heated, do the preinfusion
-    gpio_set_level(IO_PUMP, 1);
-    vTaskDelay(1000 / portTICK_PERIOD_MS);
-    gpio_set_level(IO_PUMP, 0);
-    // Wait a bit then start brewing
-    vTaskDelay(500 / portTICK_PERIOD_MS);
-    gpio_set_level(IO_PUMP, 1);
-    vTaskDelay(30000 / portTICK_PERIOD_MS); // 30 sec brew time to start lol
-    gpio_set_level(IO_PUMP, 0);
-    setpoint = 20.0f;
+    // tick_brew_started = xTaskGetTickCount();
+
+    // // When heated, do the preinfusion
+    // gpio_set_level(IO_PUMP, 1);
+    // pump_state = 1;
+    // // vTaskDelay(2000 / portTICK_PERIOD_MS);
+    // // gpio_set_level(IO_PUMP, 0);
+    // // pump_state = 0;
+    // // Wait a bit then start brewing
+    // setpoint = 20.0f; // TESTING
+    // vTaskDelay(500 / portTICK_PERIOD_MS);
+    // gpio_set_level(IO_PUMP, 1);
+    // pump_state = 1;
+    // vTaskDelay(35000 / portTICK_PERIOD_MS); // 30 sec brew time to start lol
+    // gpio_set_level(IO_PUMP, 0);
+    // pump_state = 0;
+    // setpoint = 20.0f;
 
     // Done!
+
+
 
     vTaskDelete(NULL);
 
@@ -96,6 +110,7 @@ void brew_click_cb(lv_event_t * e)
         else {
             vTaskDelete(brew_task_handle);
             gpio_set_level(IO_PUMP, 0);
+            pump_state = 0;
             setpoint = 20.0f;
         }
 

@@ -25,6 +25,8 @@
 #include "Interface.h"
 
 #define PID_TIME_MS 250.0f // Make sure this is float
+#define MCP_N 50 // How many samples ahead the MCP loop should use - keep >20 (to compensate for boiler delay)
+#define MCP_GD_A 0.01f // Learning rate of gradient descent - must be float
 
 extern float setpoint; // Degrees C
 extern float curr_temp; // Degrees C

@@ -502,14 +502,37 @@ extern float setpoint;
 void display_task(void *pvParameters) {
     auto curr_temp_label = lv_obj_find_by_name(main_screen, "curr_water_temp");
     auto set_temp_label = lv_obj_find_by_name(main_screen, "set_temp");
+    auto brew_time_elapsed_label = lv_obj_find_by_name(main_screen, "curr_brew_time_elapsed");
+    auto brew_temp_chart = lv_obj_find_by_name(main_screen, "temperature_chart");
+    auto brew_temp_chart_scale = lv_obj_find_by_name(main_screen, "brew_temp_chart_scale");
+    lv_chart_set_point_count(brew_temp_chart, 50);
+    lv_chart_set_axis_range(brew_temp_chart, LV_CHART_AXIS_PRIMARY_Y, 0, 120);
+    lv_scale_set_range(brew_temp_chart_scale, 0, 120);
+    auto brew_temp_chart_series = lv_chart_add_series(brew_temp_chart, lv_color_t(0, 0, 0xFF), LV_CHART_AXIS_PRIMARY_Y);
+
+    uint32_t chart_prev_ms = 0; // Past refresh time for chart
+
     while(1) {
         xSemaphoreTake(lvgl_mutex, portMAX_DELAY);
         gpio_set_level(IO_LED_BLUE, 1);
 
         // bar_set_value(curr_temp_bar, curr_temp);
         // bar_set_value(set_temp_bar, setpoint);
+        extern uint8_t brew_state;
+        extern uint32_t tick_brew_started;
+        if(brew_state) {
+            lv_label_set_text_fmt(brew_time_elapsed_label, "%lu secs", ((pdTICKS_TO_MS(xTaskGetTickCount()) - pdTICKS_TO_MS(tick_brew_started)) / 1000));
+        }
+
         lv_label_set_text_fmt(curr_temp_label, "Curr temp: %f C", curr_temp);
         lv_label_set_text_fmt(set_temp_label, "Set temp: %f C", setpoint);
+
+        if((uint32_t)pdTICKS_TO_MS(xTaskGetTickCount()) > (chart_prev_ms + 500)) {
+            lv_chart_set_next_value(brew_temp_chart, brew_temp_chart_series, 0);
+            lv_chart_refresh(brew_temp_chart);
+
+            chart_prev_ms = (uint32_t)pdTICKS_TO_MS(xTaskGetTickCount());
+        }
 
         int time_till_next_ms = lv_task_handler();
         gpio_set_level(IO_LED_BLUE, 0);

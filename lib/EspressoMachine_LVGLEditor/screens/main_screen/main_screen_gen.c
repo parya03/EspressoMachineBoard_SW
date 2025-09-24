@@ -78,6 +78,20 @@ lv_obj_t * main_screen_create(void)
     lv_obj_set_name(set_temp, "set_temp");
 
 
+    lv_obj_t * temperature_chart = lv_chart_create(col1);
+    lv_obj_set_name(temperature_chart, "temperature_chart");
+    lv_chart_set_point_count(temperature_chart, 50);
+    lv_obj_set_width(temperature_chart, 300);
+    lv_obj_set_height(temperature_chart, 200);
+
+    lv_obj_t * brew_temp_chart_scale = lv_scale_create(temperature_chart);
+    lv_obj_set_name(brew_temp_chart_scale, "brew_temp_chart_scale");
+    lv_scale_set_mode(brew_temp_chart_scale, LV_SCALE_MODE_VERTICAL_LEFT);
+    lv_obj_set_height(brew_temp_chart_scale, lv_pct(100));
+    lv_obj_set_x(brew_temp_chart_scale, -110);
+
+
+
 
     lv_obj_t * col2 = column_create(row);
     lv_obj_set_name(col2, "col2");
