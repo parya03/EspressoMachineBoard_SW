@@ -45,9 +45,9 @@ uint32_t tick_brew_started = 0; // Keep track of time
 // Start brewing
 void brew_task(void *pvParameters) {
     // Set boiler to 93 C (Brew temp)
-    setpoint = 95.0f; // Slightly higher so it gets there quicker
-    vTaskDelay(5000 / portTICK_PERIOD_MS);
-    setpoint = 20.0f; // Slightly higher so it gets there quicker
+    setpoint = 75; // Slightly higher so it gets there quicker
+    // vTaskDelay(5000 / portTICK_PERIOD_MS);
+    // setpoint = 20.0f; // Slightly higher so it gets there quicker
 
     // // Wait for it to heat
     // while(curr_temp <= 93.0) {
@@ -111,7 +111,7 @@ void brew_click_cb(lv_event_t * e)
             vTaskDelete(brew_task_handle);
             gpio_set_level(IO_PUMP, 0);
             pump_state = 0;
-            setpoint = 20.0f;
+            setpoint = 0.0f;
         }
 
     }

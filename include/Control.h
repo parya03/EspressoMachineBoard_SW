@@ -24,9 +24,12 @@
 
 #include "Interface.h"
 
-#define PID_TIME_MS 250.0f // Make sure this is float
+#define PID_TIME_MS 500.0f // Make sure this is float
 #define MCP_N 50 // How many samples ahead the MCP loop should use - keep >20 (to compensate for boiler delay)
-#define MCP_GD_A 0.01f // Learning rate of gradient descent - must be float
+
+// MPC tunables
+#define ENERGY_PER_HALF_PHASE 6.482f // 777.8W RMS = 777.8 J/S -> 777.8J / 6.481666667 J per half phase
+#define MODEL_J_PER_C 312.652f // Found empirically by dividing energy put in my temperature rise
 
 extern float setpoint; // Degrees C
 extern float curr_temp; // Degrees C

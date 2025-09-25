@@ -22,6 +22,53 @@ gpio_config_t boiler_io_conf = {
 float setpoint = 0.0f; // Degrees C
 float curr_temp = 100.0f; // Start high by default for safety
 
+// Read raw ADC average value
+static int get_therm_adc_reading() {
+    float therm_raw_avg_adc = 0;
+
+    for(int i = 0; i < 100; i++) {
+        int therm_raw = 0;
+        ESP_ERROR_CHECK(adc_oneshot_read(adc1_handle, ADC_CHANNEL_1, &therm_raw));
+
+        therm_raw_avg_adc += therm_raw;
+        // ESP_ERROR_CHECK(adc_cali_raw_to_voltage(adc1_cali_handle, therm_raw, &therm_mV));
+
+        // therm_mV += 30; // Experimentally determined to generally be measured as ~30mV lower than actual (multimeter reference)
+    }
+
+    therm_raw_avg_adc /= 100.0f;
+
+    return therm_raw_avg_adc;
+}
+
+static float adc_2_resistance(int adc) {
+    return 794.88817 + (-214.44469 * log10f(adc)) + (-219.13082 * expf(-0.000495547 * adc));
+}
+
+static float adc_2_temp(int adc) {
+    // Calculate temp
+    // Find resistance based off of reference voltage output (measured as 2.601v)
+    // float resistance = ((2.601f * 10000.0f) / (float)(therm_mV/1000.0f)) - 10000.0f;
+    // Exponential regression (experimental) based off of raw ADC values seems to work well
+    // float resistance_kohms = (184.9902f*exp(-0.00371704f*therm_raw_avg)+15.55841f);
+    float resistance_kohms = 794.88817 + (-214.44469 * log10f(adc)) + (-219.13082 * expf(-0.000495547 * adc));
+
+    // Playing with data for a 100k NTC thermistor in Desmos gives this weird regression as best (for above 40C):
+    // 44.81207 + -0.000144689x + 110.23167*e^(-0.000103527 * x)
+
+    // Experimental regression: Numbers work until ~65C then we do linefar from there
+    // curr_temp = 154.1806f + (-69.60769f * log10(resistance_kohms)) + (0.0740364f * resistance_kohms);
+    // if(resistance_kohms > 19)
+    //     curr_temp = 161.14291 + (-75.90308 * log10f(resistance_kohms)) + (0.151561 * resistance_kohms);
+    // else
+    //     curr_temp = (-8.41398 * resistance_kohms) + 229.19328;
+
+    // Steinhard-Hart might not work because of FP shenanegans
+    // curr_temp = 1.0f / (0.002036510094 + (0.0003240228966 * logf(resistance_kohms)) + (-0.000001519537509 * pow(logf(resistance_kohms), 3)));
+    // B Model - Convert to degrees K for this
+    return (1.0f / ((1.0f/298.15f) + ((1.0f/3710.83f)*logf(resistance_kohms/84.39f)))) - 273.15;
+}
+
 void control_init() {
     esp_err_t ret;
     
@@ -30,7 +77,7 @@ void control_init() {
         .speed_mode       = LEDC_LOW_SPEED_MODE,
         .duty_resolution  = LEDC_TIMER_14_BIT,
         .timer_num        = LEDC_TIMER_0,
-        .freq_hz          = 2,  // Set output frequency at 1Hz so we only control duty cycle
+        .freq_hz          = 2,  // Set output frequency at 2Hz so we only control duty cycle
         .clk_cfg          = LEDC_AUTO_CLK
     };
     ESP_ERROR_CHECK(ledc_timer_config(&ledc_timer));
@@ -75,8 +122,7 @@ void control_init() {
 }
 
 void temp_control_task(void *pvParameters) {
-    float therm_raw_avg = 0;
-    int therm_mV = 0;
+    float therm_raw_avg = 0.0f;
     float temp_prev = 0.0f;
 
     // PID stuff
@@ -85,43 +131,16 @@ void temp_control_task(void *pvParameters) {
     float d_e = 0; // Derivative
 
     // MPC state variables
-    float curr_energy = 0.0f; // Current energy in the thermoblock
+    // Current energy in the thermoblock, relative to 0 C
+    // Assumes steady state initially. If it's not steady state, then control system should (hopefully) compensate later on by updating state.
+    float curr_energy = adc_2_temp(get_therm_adc_reading()) * MODEL_J_PER_C;
+
+    float Y_pred[MCP_N] = {  };
 
     // Measure thermistor and output on serial
     while(1) {
-        for(int i = 0; i < 100; i++) {
-            int therm_raw = 0;
-            ESP_ERROR_CHECK(adc_oneshot_read(adc1_handle, ADC_CHANNEL_1, &therm_raw));
-
-            therm_raw_avg += therm_raw;
-            // ESP_ERROR_CHECK(adc_cali_raw_to_voltage(adc1_cali_handle, therm_raw, &therm_mV));
-
-            // therm_mV += 30; // Experimentally determined to generally be measured as ~30mV lower than actual (multimeter reference)
-        }
-
-        therm_raw_avg /= 100.0f;
-
-        // Calculate temp
-        // Find resistance based off of reference voltage output (measured as 2.601v)
-        // float resistance = ((2.601f * 10000.0f) / (float)(therm_mV/1000.0f)) - 10000.0f;
-        // Exponential regression (experimental) based off of raw ADC values seems to work well
-        // float resistance_kohms = (184.9902f*exp(-0.00371704f*therm_raw_avg)+15.55841f);
-        float resistance_kohms = 794.88817 + (-214.44469 * log10f(therm_raw_avg)) + (-219.13082 * expf(-0.000495547 * therm_raw_avg));
-
-        // Playing with data for a 100k NTC thermistor in Desmos gives this weird regression as best (for above 40C):
-        // 44.81207 + -0.000144689x + 110.23167*e^(-0.000103527 * x)
-
-        // Experimental regression: Numbers work until ~65C then we do linefar from there
-        // curr_temp = 154.1806f + (-69.60769f * log10(resistance_kohms)) + (0.0740364f * resistance_kohms);
-        // if(resistance_kohms > 19)
-        //     curr_temp = 161.14291 + (-75.90308 * log10f(resistance_kohms)) + (0.151561 * resistance_kohms);
-        // else
-        //     curr_temp = (-8.41398 * resistance_kohms) + 229.19328;
-
-        // Steinhard-Hart might not work because of FP shenanegans
-        // curr_temp = 1.0f / (0.002036510094 + (0.0003240228966 * logf(resistance_kohms)) + (-0.000001519537509 * pow(logf(resistance_kohms), 3)));
-        // B Model - Convert to degrees K for this
-        curr_temp = (1.0f / ((1.0f/298.15f) + ((1.0f/3710.83f)*logf(resistance_kohms/84.39f)))) - 273.15;
+        therm_raw_avg = get_therm_adc_reading();
+        curr_temp = adc_2_temp(therm_raw_avg);
 
         // ESP_LOGI("ADC", "Thermistor measured at raw=%f = %d mV, R=%f kOhms, Temp=%f C, dTemp = %f", therm_raw_avg, therm_mV, resistance_kohms, temp, (temp - temp_prev));
         temp_prev = curr_temp;
@@ -138,16 +157,16 @@ void temp_control_task(void *pvParameters) {
         // ~5 sec to see any chage, ~20 sec for max change - heat equation
         // We should use the derivative to see what the temp is going to look like in ~10 seconds,
         // and if it will overshoot, then reduce control output
-        float e = setpoint - curr_temp;
-        float p = (2 * e);
-        float i = (0 * int_e);
-        float d = (8 * d_e);
+        // float e = setpoint - curr_temp;
+        // float p = (2 * e);
+        // float i = (0 * int_e);
+        // float d = (8 * d_e);
         // // if(d > 0.0f) {
         // //     d = 0.0f;
         // // }
         // extern uint8_t brew_state;
         // extern uint8_t pump_state;
-        float kc = 2; // Controller gain
+        // float kc = 2; // Controller gain
         // int u = (int)(kc * (e + i + d));
 
         // // Given in Series/Interactive form for Ziegler-Nichols tuning
@@ -166,19 +185,20 @@ void temp_control_task(void *pvParameters) {
 
         // prev_e = e;
         int u = 0;
-        if(curr_temp < setpoint) {
-            u = 60;
-        }
+        // if(curr_temp < setpoint) {
+        //     u = 60;
+        // }
         // MPC - Model Predictive Control
         // We use a model of the system to predict what the state will be later on and use that to control
         // Temperature measurement follows logistic function:
         // x[n] = (energy / 550 J/C)*(e^(0.125(n-50)))/(1+e^(0.125(n-50)))
         // Where N is in HALF SECONDS
         float U[MCP_N] = { 0.0f }; // Array of predicted future control inputs
-        float X[MCP_N] = { curr_temp }; // Predicted future energy states where X[0] is current state
+        float X[MCP_N] = { curr_energy }; // Predicted future energy states where X[0] is current state
         
         // TODO measure energy better
-        float setpoint_energy_error = (setpoint - curr_temp) * 550.0f; // How much more energy we need to dump into thermoblock to meet setpoint
+        float setpoint_energy_error = (setpoint * MODEL_J_PER_C) - curr_energy; // How much more energy we need to dump into thermoblock to meet setpoint
+        float setpoint_energy = (setpoint * MODEL_J_PER_C);
 
         // Max 500 gradient descent runs (in case it doesn't fully converge, don't hold up the loop)
         // for(int i = 0; i < 500; i++) {
@@ -210,27 +230,52 @@ void temp_control_task(void *pvParameters) {
         //     }
         // }
 
-        // Based off model, calculate control sequence to minimize MSE
-        for(int n = 0; n < MCP_N; n++) {
-            float V_n = 0.0f;
-            for(auto x : X) {
-                V_n += powf(x - setpoint, 2);
-            }
-            V_n /= 2.0f * (float)MCP_N; // 1/2N to make gradient easier to compute
+        // Initial error calculation
+        float MSE = 0.0f;
+        for(auto x : X) {
+            MSE += powf(x - setpoint, 2);
+        }
+        MSE /= (2.0f * (float)MCP_N); // 1/2N to make gradient easier to compute
 
-            // Gradient: (x(n) - r) / N for all n in
-            
+        // Based off model, calculate control sequence to minimize MSE
+        for(int n = 0; n < MCP_N - 1; n++) { // End at MCP_N - 1 so that X doesn't overflow. We still predict quite far ahead.
+            // Calculate what value of u can minimize gradient of error
+            // Gradient: (x(n) - r) / N for all n in X
+
+            // Calculate optimal control to minimize error
+            U[n] = (setpoint_energy - X[n]) / ENERGY_PER_HALF_PHASE;
+            // Bounds check
+            if(U[n] < 0) {
+                U[n] = 0;
+            }
+            if(U[n] > 60) {
+                U[n] = 60;
+            }
+            // Predict next state
+            X[n+1] = X[n] + (ENERGY_PER_HALF_PHASE * U[n]);
+            // Update MSE
+            MSE += (X[n+1] - setpoint_energy) / (float)MCP_N;
         }
 
-
+        // Only output first predicted control output
+        u = U[0];
         
-        // u = (u < 0) ? 0 : (u > 60) ? 60 : u; // Bounds checking
+        u = (u < 0) ? 0 : (u > 60) ? 60 : u; // Bounds checking
+
+        // Update energy put in
+        curr_energy += u * ENERGY_PER_HALF_PHASE; // Each half phase of control adds Joules to the system.
+
+        // Update predicted y(t) and dy/dt based on the calculated control input
+
         // // u += ((brew_state && pump_state) * 60); // Take into account brew/pump state to compensate for cold water being pumped into boiler
         // u = (u < 0) ? 0 : (u > 60) ? 60 : u; // Bounds checking
 
         // ESP_LOGI("Temp PID", "y(t)=%f, e(t)=%f, u(t)=%f, P=%f, I=%f, D=%f, int_e=%f, d_e=%f", temp, e, u, p, i, d, int_e, d_e);
 
-        ESP_LOGI("Temp PID", "t=%lu, r(t)=%f, y(t)=%f, e(t)=%f, u(t)=%d phases, resistance=%f kohms, raw ADC=%f, P=%f, I=%f, D=%f, Kc=%f, int_e=%f, d_e=%f", (uint32_t)pdTICKS_TO_MS(xTaskGetTickCount()), setpoint, curr_temp, e, u, resistance_kohms, therm_raw_avg, p, i, d, kc, int_e, d_e);
+        // ESP_LOGI("Temp PID", "t=%lu, r(t)=%f, y(t)=%f, e(t)=%f, u(t)=%d half-phases, resistance=%f kohms, raw ADC=%f, P=%f, I=%f, D=%f, Kc=%f, int_e=%f, d_e=%f", (uint32_t)pdTICKS_TO_MS(xTaskGetTickCount()), setpoint, curr_temp, e, u, resistance_kohms, therm_raw_avg, p, i, d, kc, int_e, d_e);
+        ESP_LOGI("Temp MPC", "t=%lu, r(t)=%f, y(t)=%f, x(t)=%f Joules, Setpoint energy=%f, MSE=%f, u(t)=%d half-phases, resistance=%f kohms, raw ADC=%f, d_e=%f", (uint32_t)pdTICKS_TO_MS(xTaskGetTickCount()), setpoint, curr_temp, curr_energy, setpoint_energy, MSE, u, adc_2_resistance(therm_raw_avg), therm_raw_avg, d_e);
+        ESP_LOGI("Temp MPC", "Next 10 u: %f %f %f %f %f %f %f %f %f %f", U[0], U[1], U[2], U[3], U[4], U[5], U[6], U[7], U[8], U[9]);
+        ESP_LOGI("Temp MPC", "Next 10 x: %f %f %f %f %f %f %f %f %f %f", X[0], X[1], X[2], X[3], X[4], X[5], X[6], X[7], X[8], X[9]);
 
         ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 273*u);
         ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
