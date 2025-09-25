@@ -45,7 +45,7 @@ uint32_t tick_brew_started = 0; // Keep track of time
 // Start brewing
 void brew_task(void *pvParameters) {
     // Set boiler to 93 C (Brew temp)
-    setpoint = 75; // Slightly higher so it gets there quicker
+    setpoint = 70; // Slightly higher so it gets there quicker
     // vTaskDelay(5000 / portTICK_PERIOD_MS);
     // setpoint = 20.0f; // Slightly higher so it gets there quicker
 

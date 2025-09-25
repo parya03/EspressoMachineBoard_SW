@@ -121,6 +121,12 @@ void control_init() {
     // }
 }
 
+// Return logistic function 0 <= y <= 1 corresponding to magnitude of energy change reported by y(t)
+// Multiply this by energy put in (proportional to u(t)) to get the energy reading (temperature) at future sample n
+static float y_logistic(float n) {
+    return (float)((exp(0.125f * (n - MCP_N))) / (1 + exp(0.125f * (n - MCP_N))));
+}
+
 void temp_control_task(void *pvParameters) {
     float therm_raw_avg = 0.0f;
     float temp_prev = 0.0f;
@@ -135,7 +141,9 @@ void temp_control_task(void *pvParameters) {
     // Assumes steady state initially. If it's not steady state, then control system should (hopefully) compensate later on by updating state.
     float curr_energy = adc_2_temp(get_therm_adc_reading()) * MODEL_J_PER_C;
 
-    float Y_pred[MCP_N] = {  };
+    float Y_pred[MCP_N] = { 0 };
+    float dY_pred[MCP_N] = { 0 };
+    int dY_pred_index = 1; // It's a ring buffer
 
     // Measure thermistor and output on serial
     while(1) {
@@ -143,7 +151,6 @@ void temp_control_task(void *pvParameters) {
         curr_temp = adc_2_temp(therm_raw_avg);
 
         // ESP_LOGI("ADC", "Thermistor measured at raw=%f = %d mV, R=%f kOhms, Temp=%f C, dTemp = %f", therm_raw_avg, therm_mV, resistance_kohms, temp, (temp - temp_prev));
-        temp_prev = curr_temp;
 
         // PID skeleton
         // setpoint = 27.0f + encoder_get_count_total();
@@ -263,9 +270,19 @@ void temp_control_task(void *pvParameters) {
         u = (u < 0) ? 0 : (u > 60) ? 60 : u; // Bounds checking
 
         // Update energy put in
-        curr_energy += u * ENERGY_PER_HALF_PHASE; // Each half phase of control adds Joules to the system.
+        curr_energy += (u * ENERGY_PER_HALF_PHASE); // Each half phase of control adds Joules to the system.
 
         // Update predicted y(t) and dy/dt based on the calculated control input
+        // Zero out last index in ring buffer since that's the new "frontier" of our current ring buffer
+        Y_pred[(dY_pred_index - 1) % MCP_N] = 0.0f;
+        dY_pred[(dY_pred_index - 1) % MCP_N] = 0.0f;
+        // TODO this part is broken
+        for(int i = 0; i < MCP_N; i++) {
+            // Derivative of C * logistic = C * dLogistic = C * logistic * (1 - logistic)
+            // They also add up for each summation
+            Y_pred[(dY_pred_index + i + 1) % MCP_N] += ((u * ENERGY_PER_HALF_PHASE) * (y_logistic(i))) / MODEL_J_PER_C;
+            dY_pred[(dY_pred_index + i + 1) % MCP_N] = Y_pred[(dY_pred_index + i + 1) % MCP_N] - Y_pred[(dY_pred_index + i) % MCP_N];
+        }
 
         // // u += ((brew_state && pump_state) * 60); // Take into account brew/pump state to compensate for cold water being pumped into boiler
         // u = (u < 0) ? 0 : (u > 60) ? 60 : u; // Bounds checking
@@ -273,12 +290,16 @@ void temp_control_task(void *pvParameters) {
         // ESP_LOGI("Temp PID", "y(t)=%f, e(t)=%f, u(t)=%f, P=%f, I=%f, D=%f, int_e=%f, d_e=%f", temp, e, u, p, i, d, int_e, d_e);
 
         // ESP_LOGI("Temp PID", "t=%lu, r(t)=%f, y(t)=%f, e(t)=%f, u(t)=%d half-phases, resistance=%f kohms, raw ADC=%f, P=%f, I=%f, D=%f, Kc=%f, int_e=%f, d_e=%f", (uint32_t)pdTICKS_TO_MS(xTaskGetTickCount()), setpoint, curr_temp, e, u, resistance_kohms, therm_raw_avg, p, i, d, kc, int_e, d_e);
-        ESP_LOGI("Temp MPC", "t=%lu, r(t)=%f, y(t)=%f, x(t)=%f Joules, Setpoint energy=%f, MSE=%f, u(t)=%d half-phases, resistance=%f kohms, raw ADC=%f, d_e=%f", (uint32_t)pdTICKS_TO_MS(xTaskGetTickCount()), setpoint, curr_temp, curr_energy, setpoint_energy, MSE, u, adc_2_resistance(therm_raw_avg), therm_raw_avg, d_e);
+        ESP_LOGI("Temp MPC", "t=%lu, r(t)=%f, y(t)=%f, x(t)=%f Joules, Setpoint energy=%f, MSE=%f, u(t)=%d half-phases, dy(t)=%f, resistance=%f kohms, raw ADC=%f, d_e=%f", (uint32_t)pdTICKS_TO_MS(xTaskGetTickCount()), setpoint, curr_temp, curr_energy, setpoint_energy, MSE, u, (curr_temp - temp_prev), adc_2_resistance(therm_raw_avg), therm_raw_avg, d_e);
         ESP_LOGI("Temp MPC", "Next 10 u: %f %f %f %f %f %f %f %f %f %f", U[0], U[1], U[2], U[3], U[4], U[5], U[6], U[7], U[8], U[9]);
         ESP_LOGI("Temp MPC", "Next 10 x: %f %f %f %f %f %f %f %f %f %f", X[0], X[1], X[2], X[3], X[4], X[5], X[6], X[7], X[8], X[9]);
-
+        ESP_LOGI("Temp MPC", "Next 10 dY (predicted): %f %f %f %f %f %f %f %f %f %f", dY_pred[(dY_pred_index + 0) % MCP_N], dY_pred[(dY_pred_index + 1) % MCP_N], dY_pred[(dY_pred_index + 2) % MCP_N], dY_pred[(dY_pred_index + 3) % MCP_N], dY_pred[(dY_pred_index + 4) % MCP_N], dY_pred[(dY_pred_index + 5) % MCP_N], dY_pred[(dY_pred_index + 6) % MCP_N], dY_pred[(dY_pred_index + 7) % MCP_N], dY_pred[(dY_pred_index + 8) % MCP_N], dY_pred[(dY_pred_index + 9) % MCP_N]);
+    
         ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 273*u);
         ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
+        
+        dY_pred_index += 1;
+        temp_prev = curr_temp;
 
         vTaskDelay(PID_TIME_MS / portTICK_PERIOD_MS);
     }
