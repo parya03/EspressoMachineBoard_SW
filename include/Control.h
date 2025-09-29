@@ -23,8 +23,9 @@
 #include "board_common.h"
 
 #include "Interface.h"
+#include "Matrix.h"
 
-#define PID_TIME_MS 500.0f // Make sure this is float
+#define PID_TIME_MS 5000.0f // 500.0f // Make sure this is float
 #define MCP_N 50 // How many samples ahead the MCP loop should use - keep >20 (to compensate for boiler delay)
 
 // MPC tunables

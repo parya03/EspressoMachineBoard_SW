@@ -105,13 +105,18 @@ void brew_click_cb(lv_event_t * e)
         // gpio_set_level(IO_PUMP, brew_state);
 
         if(brew_state) {
-            xTaskCreate(brew_task, "brew_task", 10240, NULL, 10, &brew_task_handle);
+            // xTaskCreate(brew_task, "brew_task", 10240, NULL, 10, &brew_task_handle);
+            ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 8192);
+            ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
         }
         else {
-            vTaskDelete(brew_task_handle);
-            gpio_set_level(IO_PUMP, 0);
-            pump_state = 0;
-            setpoint = 0.0f;
+            // vTaskDelete(brew_task_handle);
+            // gpio_set_level(IO_PUMP, 0);
+            // pump_state = 0;
+            // setpoint = 0.0f;
+
+            ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 0);
+            ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
         }
 
     }

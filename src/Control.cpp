@@ -145,6 +145,31 @@ void temp_control_task(void *pvParameters) {
     float dY_pred[MCP_N] = { 0 };
     int dY_pred_index = 1; // It's a ring buffer
 
+    // Kalman state variables
+    // Row-major order e.g. X[row][col]
+    Matrix X(2, 1);
+    Matrix P(2, 2);
+
+    // Kalman constants
+    Matrix A(2, 2, (float[100]){1, PID_TIME_MS/1000.0f, 0.0f, 1.0f});
+    A.print();
+    A.transpose().print();
+    // Matrix A_transpose[2][2] = {{1, 1}, {1, PID_TIME_MS/1000.0f}};
+    Matrix Q(2, 2, (float[100]){20.0f, 0.0f, 0.0f, 20.0f});
+
+    // Get first 2 measurements
+    X[0][0] = adc_2_temp(get_therm_adc_reading()) * MODEL_J_PER_C;
+    P[0][0] = 0.279f;
+    vTaskDelay(PID_TIME_MS / portTICK_PERIOD_MS);
+    float curr_X0 = adc_2_temp(get_therm_adc_reading()) * MODEL_J_PER_C;
+    X[1][0] = curr_X0 - X[0][0];
+    X[0][0] = curr_X0;
+    P[1][1] = 10000; // High variance bc we aren't sure about change yet
+    ESP_LOGI("Control - Kalman", "Initial states generated, X = [%f, %f]T; P = [%f, %f; %f, %f]", X[0][0], X[1][0], P[0][0], P[0][1], P[1][0], P[1][1]);
+    vTaskDelay(PID_TIME_MS / portTICK_PERIOD_MS);
+
+    int u = 0;
+
     // Measure thermistor and output on serial
     while(1) {
         therm_raw_avg = get_therm_adc_reading();
@@ -191,7 +216,7 @@ void temp_control_task(void *pvParameters) {
         // // int_e = (int_e > 200) ? 200 : (int_e < -200) ? -200 : int_e;
 
         // prev_e = e;
-        int u = 0;
+        // int u = 0;
         // if(curr_temp < setpoint) {
         //     u = 60;
         // }
@@ -201,7 +226,7 @@ void temp_control_task(void *pvParameters) {
         // x[n] = (energy / 550 J/C)*(e^(0.125(n-50)))/(1+e^(0.125(n-50)))
         // Where N is in HALF SECONDS
         float U[MCP_N] = { 0.0f }; // Array of predicted future control inputs
-        float X[MCP_N] = { curr_energy }; // Predicted future energy states where X[0] is current state
+        float MCP_X[MCP_N] = { curr_energy }; // Predicted future energy states where X[0] is current state
         
         // TODO measure energy better
         float setpoint_energy_error = (setpoint * MODEL_J_PER_C) - curr_energy; // How much more energy we need to dump into thermoblock to meet setpoint
@@ -237,9 +262,51 @@ void temp_control_task(void *pvParameters) {
         //     }
         // }
 
+        static int count = 0;
+        // ------------------------------------------------------------------
+        // Kalman filter
+        // Prediction step
+        // float X_p[2][1];
+        Matrix X_p = A * X;
+        // matmul((float *)A, 2, 2, (float *)X, 2, 1, (float *)X_p);
+
+        // Control input
+        extern uint8_t pump_state;
+        X_p[0][0] += ENERGY_PER_HALF_PHASE * u;
+        X_p[1][0] = -625.304f * pump_state; // Energy loss from pump putting water through TODO div 2 to account for timestep?
+
+        Matrix P_p(2, 2);
+        P_p = ((A * P) * A.transpose()) + Q;
+
+        // Estimate step
+        Matrix S(1, 1);
+        Matrix H(1, 2, (float[100]){y_logistic(PID_TIME_MS/1000.0f) / MODEL_J_PER_C, ((PID_TIME_MS/1000.0f) * y_logistic(PID_TIME_MS/1000.0f)) / MODEL_J_PER_C});
+        S = ((H * P_p) * H.transpose()) + Matrix(1, 1, 0.279f);
+        Matrix K(2, 1);
+        Matrix S_inv(1, 1);
+        S_inv[0][0] = 1.0f / S[0][0]; // Sketchy non-generic trick but we know S is 1x1
+        K = ((P_p * H.transpose()) * S_inv);
+
+        Matrix Z(1, 1, curr_temp);
+        Matrix hx(1, 1, ((X[0][0] / MODEL_J_PER_C) + ((X_p[1][0] * y_logistic(PID_TIME_MS/1000.0f))/MODEL_J_PER_C))); // z - h(x_p)
+        X = X_p + (K * (Z - hx));
+        P = P_p - ((K * H) * P_p);
+
+        // A.print();
+        // A.transpose().print();
+        X_p.print();
+        K.print();
+        H.print();
+        H.transpose().print();
+        hx.print();
+        P_p.print();
+        S.print();
+        ESP_LOGI("Control - Kalman", "y_logistic = %f, States generated, X = [%f, %f]T; P = [%f, %f; %f, %f]", y_logistic(PID_TIME_MS/1000.0f), X[0][0], X[1][0], P[0][0], P[0][1], P[1][0], P[1][1]);
+        // ------------------------------------------------------------------
+
         // Initial error calculation
         float MSE = 0.0f;
-        for(auto x : X) {
+        for(auto x : MCP_X) {
             MSE += powf(x - setpoint, 2);
         }
         MSE /= (2.0f * (float)MCP_N); // 1/2N to make gradient easier to compute
@@ -250,7 +317,7 @@ void temp_control_task(void *pvParameters) {
             // Gradient: (x(n) - r) / N for all n in X
 
             // Calculate optimal control to minimize error
-            U[n] = (setpoint_energy - X[n]) / ENERGY_PER_HALF_PHASE;
+            U[n] = (setpoint_energy - MCP_X[n]) / ENERGY_PER_HALF_PHASE;
             // Bounds check
             if(U[n] < 0) {
                 U[n] = 0;
@@ -259,9 +326,9 @@ void temp_control_task(void *pvParameters) {
                 U[n] = 60;
             }
             // Predict next state
-            X[n+1] = X[n] + (ENERGY_PER_HALF_PHASE * U[n]);
+            MCP_X[n+1] = MCP_X[n] + (ENERGY_PER_HALF_PHASE * U[n]);
             // Update MSE
-            MSE += (X[n+1] - setpoint_energy) / (float)MCP_N;
+            MSE += (MCP_X[n+1] - setpoint_energy) / (float)MCP_N;
         }
 
         // Only output first predicted control output
@@ -290,13 +357,13 @@ void temp_control_task(void *pvParameters) {
         // ESP_LOGI("Temp PID", "y(t)=%f, e(t)=%f, u(t)=%f, P=%f, I=%f, D=%f, int_e=%f, d_e=%f", temp, e, u, p, i, d, int_e, d_e);
 
         // ESP_LOGI("Temp PID", "t=%lu, r(t)=%f, y(t)=%f, e(t)=%f, u(t)=%d half-phases, resistance=%f kohms, raw ADC=%f, P=%f, I=%f, D=%f, Kc=%f, int_e=%f, d_e=%f", (uint32_t)pdTICKS_TO_MS(xTaskGetTickCount()), setpoint, curr_temp, e, u, resistance_kohms, therm_raw_avg, p, i, d, kc, int_e, d_e);
-        ESP_LOGI("Temp MPC", "t=%lu, r(t)=%f, y(t)=%f, x(t)=%f Joules, Setpoint energy=%f, MSE=%f, u(t)=%d half-phases, dy(t)=%f, resistance=%f kohms, raw ADC=%f, d_e=%f", (uint32_t)pdTICKS_TO_MS(xTaskGetTickCount()), setpoint, curr_temp, curr_energy, setpoint_energy, MSE, u, (curr_temp - temp_prev), adc_2_resistance(therm_raw_avg), therm_raw_avg, d_e);
-        ESP_LOGI("Temp MPC", "Next 10 u: %f %f %f %f %f %f %f %f %f %f", U[0], U[1], U[2], U[3], U[4], U[5], U[6], U[7], U[8], U[9]);
-        ESP_LOGI("Temp MPC", "Next 10 x: %f %f %f %f %f %f %f %f %f %f", X[0], X[1], X[2], X[3], X[4], X[5], X[6], X[7], X[8], X[9]);
-        ESP_LOGI("Temp MPC", "Next 10 dY (predicted): %f %f %f %f %f %f %f %f %f %f", dY_pred[(dY_pred_index + 0) % MCP_N], dY_pred[(dY_pred_index + 1) % MCP_N], dY_pred[(dY_pred_index + 2) % MCP_N], dY_pred[(dY_pred_index + 3) % MCP_N], dY_pred[(dY_pred_index + 4) % MCP_N], dY_pred[(dY_pred_index + 5) % MCP_N], dY_pred[(dY_pred_index + 6) % MCP_N], dY_pred[(dY_pred_index + 7) % MCP_N], dY_pred[(dY_pred_index + 8) % MCP_N], dY_pred[(dY_pred_index + 9) % MCP_N]);
+        ESP_LOGI("Temp MPC", "t=%lu, r(t)=%f, y(t)=%fC=%fJ, x(t)=%f Joules, Setpoint energy=%f, MSE=%f, u(t)=%d half-phases, dy(t)=%f, resistance=%f kohms, raw ADC=%f, d_e=%f", (uint32_t)pdTICKS_TO_MS(xTaskGetTickCount()), setpoint, curr_temp, curr_temp*MODEL_J_PER_C, curr_energy, setpoint_energy, MSE, u, (curr_temp - temp_prev), adc_2_resistance(therm_raw_avg), therm_raw_avg, d_e);
+        // ESP_LOGI("Temp MPC", "Next 10 u: %f %f %f %f %f %f %f %f %f %f", U[0], U[1], U[2], U[3], U[4], U[5], U[6], U[7], U[8], U[9]);
+        // ESP_LOGI("Temp MPC", "Next 10 MCP_X: %f %f %f %f %f %f %f %f %f %f", MCP_X[0], MCP_X[1], MCP_X[2], MCP_X[3], MCP_X[4], MCP_X[5], MCP_X[6], MCP_X[7], MCP_X[8], MCP_X[9]);
+        // ESP_LOGI("Temp MPC", "Next 10 dY (predicted): %f %f %f %f %f %f %f %f %f %f", dY_pred[(dY_pred_index + 0) % MCP_N], dY_pred[(dY_pred_index + 1) % MCP_N], dY_pred[(dY_pred_index + 2) % MCP_N], dY_pred[(dY_pred_index + 3) % MCP_N], dY_pred[(dY_pred_index + 4) % MCP_N], dY_pred[(dY_pred_index + 5) % MCP_N], dY_pred[(dY_pred_index + 6) % MCP_N], dY_pred[(dY_pred_index + 7) % MCP_N], dY_pred[(dY_pred_index + 8) % MCP_N], dY_pred[(dY_pred_index + 9) % MCP_N]);
     
-        ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 273*u);
-        ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
+        // ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 273*u);
+        // ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
         
         dY_pred_index += 1;
         temp_prev = curr_temp;
