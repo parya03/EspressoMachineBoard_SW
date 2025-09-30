@@ -106,14 +106,22 @@ void brew_click_cb(lv_event_t * e)
 
         if(brew_state) {
             // xTaskCreate(brew_task, "brew_task", 10240, NULL, 10, &brew_task_handle);
-            ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 8192);
-            ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
+            // ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 8192);
+            // ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
+
+            setpoint = 50.0f;
+
+            // vTaskDelay(500 / portTICK_PERIOD_MS);
+
+            // ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 0);
+            // ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
+
         }
         else {
             // vTaskDelete(brew_task_handle);
             // gpio_set_level(IO_PUMP, 0);
             // pump_state = 0;
-            // setpoint = 0.0f;
+            setpoint = 0.0f;
 
             ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 0);
             ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
@@ -232,7 +240,7 @@ void app_main() {
     // lv_anim_start(&a1);
 
     // LVGL refresh pinned to second core
-    xTaskCreate(temp_control_task, "temp_control_task", 10240, NULL, 10, NULL);
+    xTaskCreate(temp_control_task, "temp_control_task", 20480, NULL, 10, NULL);
     xTaskCreatePinnedToCore(display_task, "display_task", 20480, NULL, 10, NULL, 1);
 
     // vTaskDelay(5000 / portTICK_PERIOD_MS);

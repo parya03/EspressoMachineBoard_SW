@@ -50,7 +50,8 @@ static void transposeMatrix(const float* A, int rows, int cols, float* B) {
     for (int i = 0; i < rows; i++) {
         for (int j = 0; j < cols; j++) {
             // printf("%d %d\n", i, j);
-            buffer_deref(B, j, i) = buffer_deref(A, i, j);
+            // buffer_deref(B, j, i) = buffer_deref(A, i, j);
+            B[(j * cols) + i] = A[(i * cols) + j];
         }
     }
 }
@@ -72,7 +73,8 @@ class Matrix {
         // 0 initialize
         for(int i = 0; i < rows; i++) {
             for(int o = 0; o < cols; o++) {
-                buffer_deref(data, i, o) = 0;
+                // buffer_deref(data, i, o) = 0;
+                data[(i * cols) + o] = 0;
             }
         }
     }
@@ -89,7 +91,8 @@ class Matrix {
         // 0 initialize
         for(int i = 0; i < rows; i++) {
             for(int o = 0; o < cols; o++) {
-                buffer_deref(data, i, o) = data_in[(i * rows) + o];
+                // buffer_deref(data, i, o) = data_in[(i * cols) + o];
+                data[(i * cols) + o] = data_in[(i * cols) + o];
             }
         }
     }
@@ -106,7 +109,8 @@ class Matrix {
         // 0 initialize
         for(int i = 0; i < rows; i++) {
             for(int o = 0; o < cols; o++) {
-                buffer_deref(data, i, o) = data_in;
+                // buffer_deref(data, i, o) = data_in;
+                data[(i * cols) + o] = data_in;
             }
         }
     }
@@ -123,7 +127,7 @@ class Matrix {
     }
 
     float *operator[](int row_index) {
-        return &(data[row_index * 10]);
+        return &(data[row_index * cols]);
     }
 
     Matrix &operator=(const Matrix& other) {
@@ -150,7 +154,8 @@ class Matrix {
 
         for(int i = 0; i < rows; i++) {
             for(int o = 0; o < cols; o++) {
-                buffer_deref(data, i, o) = buffer_deref(other.data, i, o);
+                // buffer_deref(data, i, o) = buffer_deref(other.data, i, o);
+                data[(i * cols) + o] = other.data[(i * cols) + o];
             }
         }
 
@@ -174,7 +179,8 @@ class Matrix {
         // Assume the inputted matrix 2D array has same dimension. If it doesn't then womp womp.
         for(int i = 0; i < rows; i++) {
             for(int o = 0; o < cols; o++) {
-                buffer_deref(data, i, o) = other[(i * rows) + o];
+                // buffer_deref(data, i, o) = other[(i * cols) + o];
+                data[(i * cols) + o] = other[(i * cols) + o];
             }
         }
 
@@ -185,7 +191,11 @@ class Matrix {
 
         for(int i = 0; i < rows; i++) {
             for(int o = 0; o < cols; o++) {
-                if(buffer_deref(data, i, o) != other[(i * rows) + o]) {
+                // if(buffer_deref(data, i, o) != other[(i * cols) + o]) {
+                //     return false;
+                // }
+
+                if(data[(i * cols) + o] != other[(i * cols) + o]) {
                     return false;
                 }
             }
@@ -202,7 +212,11 @@ class Matrix {
 
         for(int i = 0; i < rows; i++) {
             for(int o = 0; o < cols; o++) {
-                if(buffer_deref(data, i, o) != buffer_deref(other.data, i, o)) {
+                // if(buffer_deref(data, i, o) != buffer_deref(other.data, i, o)) {
+                //     return false;
+                // }
+
+                if(data[(i * cols) + o] != other.data[(i * cols) + o]) {
                     return false;
                 }
             }
@@ -214,11 +228,12 @@ class Matrix {
     Matrix operator+(const Matrix& other) {
         if(this->is_same_size(other)) {
             float temp[100];
-            memcpy(temp, data, 100);
+            // memcpy(temp, data, 100);
 
             for(int i = 0; i < rows; i++) {
                 for(int o = 0; o < cols; o++) {
-                    buffer_deref(temp, i, o) += buffer_deref(other.data, i, o);
+                    // buffer_deref(temp, i, o) += buffer_deref(other.data, i, o);
+                    temp[(i * cols) + o] = data[(i * cols) + o] + other.data[(i * cols) + o];
                 }
             }
 
@@ -232,11 +247,12 @@ class Matrix {
     Matrix operator-(const Matrix& other) {
         if(this->is_same_size(other)) {
             float temp[100];
-            memcpy(temp, data, 100);
+            // memcpy(temp, data, 100);
 
             for(int i = 0; i < rows; i++) {
                 for(int o = 0; o < cols; o++) {
-                    buffer_deref(temp, i, o) -= buffer_deref(other.data, i, o);
+                    // buffer_deref(temp, i, o) -= buffer_deref(other.data, i, o);
+                    temp[(i * cols) + o] = data[(i * cols) + o] - other.data[(i * cols) + o];
                 }
             }
 
@@ -250,13 +266,42 @@ class Matrix {
     Matrix operator*(const Matrix& other) {
         float temp[100];
 
-        matmul((float *)data, rows, cols, (float *)other.data, other.rows, other.cols, (float *)temp);
-        return Matrix(rows, other.cols, temp);
+        // matmul((float *)data, rows, cols, (float *)other.data, other.rows, other.cols, (float *)temp);
+
+        if (this->_cols != other._rows) {
+            assert(0 && "Error: Incompatible dimensions for multiplication");
+        }
+    
+        // Compute C = A × B
+        for (int i = 0; i < this->rows; i++) {
+            for (int j = 0; j < other.cols; j++) {
+                float sum = 0.0f;
+                for (int k = 0; k < this->cols; k++) {
+                    // sum += (*this)[i][k] * other.data[k * 10 + j];
+                    sum += data[(i * cols) + k] * other.data[(k * other.cols) + j];
+                }
+                // temp[(i * SIZE_DIAGONAL) + j] = sum;
+                temp[(i * other.cols) + j] = sum;
+            }
+        }
+
+        auto mat = Matrix(rows, other.cols, 0.0f);
+        mat._copy_buf(temp);
+
+        return mat;
     }
 
     Matrix transpose() {
         float temp[100] = { 0 };
-        transposeMatrix((const float *)data, rows, cols, (float *)temp);
+        // transposeMatrix((const float *)data, rows, cols, (float *)temp);
+
+        for (int i = 0; i < rows; i++) {
+            for (int j = 0; j < cols; j++) {
+                // printf("%d %d\n", i, j);
+                // buffer_deref(B, j, i) = buffer_deref(A, i, j);
+                temp[(j * rows) + i] = data[(i * cols) + j];
+            }
+        }
 
         auto mat = Matrix(cols, rows, 0.0f);
         mat._copy_buf(temp);
@@ -269,7 +314,8 @@ class Matrix {
         for(int i = 0; i < rows; i++) {
             printf("[ ");
             for(int o = 0; o < cols; o++) {
-                printf("%f, ", buffer_deref(data, i, o));
+                // printf("%f, ", buffer_deref(data, i, o));
+                printf("%f, ", data[(i * cols) + o]);
             }
             printf(" ]\n");
         }

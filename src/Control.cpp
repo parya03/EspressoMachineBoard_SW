@@ -127,6 +127,18 @@ static float y_logistic(float n) {
     return (float)((exp(0.125f * (n - MCP_N))) / (1 + exp(0.125f * (n - MCP_N))));
 }
 
+// n is in seconds, d_Q is in Joules. Return value of expected temperature input at n seconds from now.
+static float y_hyperbola(float n, float Q, float d_Q) {
+    float hyperbola = (1.0f / (-0.1f * (n - 4.0f))) + (d_Q/MODEL_J_PER_C);
+
+    if(hyperbola < 0.0f) {
+        return (Q/MODEL_J_PER_C);
+    }
+    else {
+        return (Q/MODEL_J_PER_C) + hyperbola;
+    }
+}
+
 void temp_control_task(void *pvParameters) {
     float therm_raw_avg = 0.0f;
     float temp_prev = 0.0f;
@@ -155,20 +167,44 @@ void temp_control_task(void *pvParameters) {
     A.print();
     A.transpose().print();
     // Matrix A_transpose[2][2] = {{1, 1}, {1, PID_TIME_MS/1000.0f}};
-    Matrix Q(2, 2, (float[100]){20.0f, 0.0f, 0.0f, 20.0f});
+    Matrix Q(2, 2, (float[100]){5.0f, 0.0f, 0.0f, 0.5f});
+
+    // Matrix test1(2, 3, (float[100]){1, 2, 3, 4, 5, 6});
+    // Matrix test2(3, 2, (float[100]){7, 8, 9, 10, 11, 12});
+
+    // test1.print();
+    // test2.print();
+    // (test1 * test2).print();
+
+    Matrix test3(2, 1, (float[100]){1, 2});
+    Matrix test4(2, 1, (float[100]){1, 2});
+
+    test3.print();
+    test4.print();
+    test4 = (test3 + test4);
+    test4.print();
 
     // Get first 2 measurements
     X[0][0] = adc_2_temp(get_therm_adc_reading()) * MODEL_J_PER_C;
-    P[0][0] = 0.279f;
+    P[0][0] = 0.02; // 0.279f;
     vTaskDelay(PID_TIME_MS / portTICK_PERIOD_MS);
     float curr_X0 = adc_2_temp(get_therm_adc_reading()) * MODEL_J_PER_C;
     X[1][0] = curr_X0 - X[0][0];
     X[0][0] = curr_X0;
-    P[1][1] = 10000; // High variance bc we aren't sure about change yet
+    P[1][1] = 0.05f; // 100; // High variance bc we aren't sure about change yet
     ESP_LOGI("Control - Kalman", "Initial states generated, X = [%f, %f]T; P = [%f, %f; %f, %f]", X[0][0], X[1][0], P[0][0], P[0][1], P[1][0], P[1][1]);
     vTaskDelay(PID_TIME_MS / portTICK_PERIOD_MS);
 
     int u = 0;
+
+    // Initial Prediction step
+    Matrix X_p = A * X;
+    Matrix P_p = ((A * P) * A.transpose()) + Q;
+
+    // Control input
+    // extern uint8_t pump_state;
+    // X_p[0][0] += (PID_TIME_MS / SSR_TIME_MS) * (ENERGY_PER_HALF_PHASE * u);
+    // X_p[1][0] += (-625.304f * pump_state) + ((1000.0f / SSR_TIME_MS) * ENERGY_PER_HALF_PHASE * u); // Energy loss from pump putting water through TODO div 2 to account for timestep?    
 
     // Measure thermistor and output on serial
     while(1) {
@@ -177,133 +213,54 @@ void temp_control_task(void *pvParameters) {
 
         // ESP_LOGI("ADC", "Thermistor measured at raw=%f = %d mV, R=%f kOhms, Temp=%f C, dTemp = %f", therm_raw_avg, therm_mV, resistance_kohms, temp, (temp - temp_prev));
 
-        // PID skeleton
-        // setpoint = 27.0f + encoder_get_count_total();
-
-        // Given in Standard form to do lambda tuning
-        // https://blog.opticontrols.com/archives/124
-        // https://blog.opticontrols.com/archives/260
-        // Now try treating it as an integrating process
-
-        // The response time is massive because we are controlling the temp of a large chunk of metal.
-        // ~5 sec to see any chage, ~20 sec for max change - heat equation
-        // We should use the derivative to see what the temp is going to look like in ~10 seconds,
-        // and if it will overshoot, then reduce control output
-        // float e = setpoint - curr_temp;
-        // float p = (2 * e);
-        // float i = (0 * int_e);
-        // float d = (8 * d_e);
-        // // if(d > 0.0f) {
-        // //     d = 0.0f;
-        // // }
-        // extern uint8_t brew_state;
-        // extern uint8_t pump_state;
-        // float kc = 2; // Controller gain
-        // int u = (int)(kc * (e + i + d));
-
-        // // Given in Series/Interactive form for Ziegler-Nichols tuning
-        // // float e = setpoint - temp;
-        // // float p = (1 * e);
-        // // float i = (0.033333 * int_e); // 1/30 * int_e
-        // // float d = (7.5 * d_e);
-        // // float kc = 1.6371; // Controller gain
-        // // int u = (int)(kc * (e + i) * (1 + d)); // Must go 0 - 60 for phase
-
-        // int_e += (e * (PID_TIME_MS / 1000.0f));
-        // d_e = (e - prev_e) * (1000.0f / PID_TIME_MS); // Derivative in degrees C/s
-        
-        // // Bounds check control values
-        // // int_e = (int_e > 200) ? 200 : (int_e < -200) ? -200 : int_e;
-
-        // prev_e = e;
-        // int u = 0;
-        // if(curr_temp < setpoint) {
-        //     u = 60;
-        // }
-        // MPC - Model Predictive Control
-        // We use a model of the system to predict what the state will be later on and use that to control
-        // Temperature measurement follows logistic function:
-        // x[n] = (energy / 550 J/C)*(e^(0.125(n-50)))/(1+e^(0.125(n-50)))
-        // Where N is in HALF SECONDS
-        float U[MCP_N] = { 0.0f }; // Array of predicted future control inputs
-        float MCP_X[MCP_N] = { curr_energy }; // Predicted future energy states where X[0] is current state
-        
         // TODO measure energy better
-        float setpoint_energy_error = (setpoint * MODEL_J_PER_C) - curr_energy; // How much more energy we need to dump into thermoblock to meet setpoint
+        // float setpoint_energy_error = (setpoint * MODEL_J_PER_C) - curr_energy; // How much more energy we need to dump into thermoblock to meet setpoint
+        float setpoint_energy_error = (setpoint * MODEL_J_PER_C) - X[0][0]; // How much more energy we need to dump into thermoblock to meet setpoint
         float setpoint_energy = (setpoint * MODEL_J_PER_C);
-
-        // Max 500 gradient descent runs (in case it doesn't fully converge, don't hold up the loop)
-        // for(int i = 0; i < 500; i++) {
-        //     // Calculate control's effect on X
-        //     for(auto U_n = 0; U_n < MCP_N; U_n++) {
-        //         float u = U[U_n];
-        //         // Each control input will put energy into the system, which shows up as a temperature increase somewhere down the line
-        //         // The temperature change for each energy input shows up as the logistic function above
-        //         // Start at 1 since that's the next state
-        //         for(int n = 1; n < (float)MCP_N-U_n; n++) {
-        //             X[n] += ((u/60) / 550.0f)*(exp(0.125f*(n-50.0f)))/(1+exp(0.125f*(n-50.0f)));
-        //         }
-        //     }
-        //     for(int n = 1; n < MCP_N; n++) {
-        //         X[n] -= 10*n; // Loss of 20 J/s from radiation etc, n = 0.5s
-        //     }
-
-        //     // Calculate loss function (MSE)
-        //     float V_n = 0.0f;
-        //     for(auto x : X) {
-        //         V_n += powf(x - setpoint, 2);
-        //     }
-        //     V_n /= 2.0f * (float)MCP_N; // 1/2N to make gradient easier to compute
-
-        //     // Update control inputs to minimize loss
-        //     // Based off of gradient of MSE
-        //     for(int n = 0; n < MCP_N; n++) {
-        //         U[n] = U[n] - (MCP_GD_A * (2.0f * U[n] - setpoint));
-        //     }
-        // }
 
         static int count = 0;
         // ------------------------------------------------------------------
         // Kalman filter
-        // Prediction step
-        // float X_p[2][1];
-        Matrix X_p = A * X;
-        // matmul((float *)A, 2, 2, (float *)X, 2, 1, (float *)X_p);
-
-        // Control input
-        extern uint8_t pump_state;
-        X_p[0][0] += ENERGY_PER_HALF_PHASE * u;
-        X_p[1][0] = -625.304f * pump_state; // Energy loss from pump putting water through TODO div 2 to account for timestep?
-
-        Matrix P_p(2, 2);
-        P_p = ((A * P) * A.transpose()) + Q;
 
         // Estimate step
         Matrix S(1, 1);
-        Matrix H(1, 2, (float[100]){y_logistic(PID_TIME_MS/1000.0f) / MODEL_J_PER_C, ((PID_TIME_MS/1000.0f) * y_logistic(PID_TIME_MS/1000.0f)) / MODEL_J_PER_C});
-        S = ((H * P_p) * H.transpose()) + Matrix(1, 1, 0.279f);
+        // Matrix H(1, 2, (float[100]){y_logistic(PID_TIME_MS/1000.0f) / MODEL_J_PER_C, ((PID_TIME_MS/1000.0f) * y_logistic(PID_TIME_MS/1000.0f)) / MODEL_J_PER_C});
+        Matrix H(1, 2, (float[100]){1.0f / MODEL_J_PER_C, 1.0f / MODEL_J_PER_C});
+        S = ((H * P_p) * H.transpose()) + Matrix(1, 1, 0.02); // 0.279f
         Matrix K(2, 1);
         Matrix S_inv(1, 1);
         S_inv[0][0] = 1.0f / S[0][0]; // Sketchy non-generic trick but we know S is 1x1
         K = ((P_p * H.transpose()) * S_inv);
 
         Matrix Z(1, 1, curr_temp);
-        Matrix hx(1, 1, ((X[0][0] / MODEL_J_PER_C) + ((X_p[1][0] * y_logistic(PID_TIME_MS/1000.0f))/MODEL_J_PER_C))); // z - h(x_p)
+        // Matrix hx(1, 1, ((X[0][0] / MODEL_J_PER_C) + ((X_p[1][0] * y_logistic(PID_TIME_MS/1000.0f))/MODEL_J_PER_C))); // z - h(x_p)
+        Matrix hx(1, 1, y_hyperbola(PID_TIME_MS / 1000.0f, X_p[0][0], X_p[1][0])); // z - h(x_p)
         X = X_p + (K * (Z - hx));
         P = P_p - ((K * H) * P_p);
 
-        // A.print();
-        // A.transpose().print();
+        (K * H).print();
         X_p.print();
+        X.print();
         K.print();
         H.print();
         H.transpose().print();
         hx.print();
         P_p.print();
         S.print();
-        ESP_LOGI("Control - Kalman", "y_logistic = %f, States generated, X = [%f, %f]T; P = [%f, %f; %f, %f]", y_logistic(PID_TIME_MS/1000.0f), X[0][0], X[1][0], P[0][0], P[0][1], P[1][0], P[1][1]);
+        (K * (Z - hx)).print();
+        ((K * H) * P_p).print();
+        ((A * P)).print();
+        ESP_LOGI("Control - Kalman", "y_hyperbola = %f, States generated, X = [%f, %f]T; P = [%f, %f; %f, %f]", y_hyperbola(PID_TIME_MS/1000.0f, X[0][0], X[1][0]), X[0][0], X[1][0], P[0][0], P[0][1], P[1][0], P[1][1]);
         // ------------------------------------------------------------------
 
+        // MPC - Model Predictive Control
+        // We use a model of the system to predict what the state will be later on and use that to control
+        // Temperature measurement follows logistic function:
+        // x[n] = (energy / 550 J/C)*(e^(0.125(n-50)))/(1+e^(0.125(n-50)))
+        // Where N is in HALF SECONDS
+        float U[MCP_N] = { 0.0f }; // Array of predicted future control inputs
+        float MCP_X[MCP_N] = { X[0][0] }; // Predicted future energy states where X[0] is current state
+        
         // Initial error calculation
         float MSE = 0.0f;
         for(auto x : MCP_X) {
@@ -341,15 +298,15 @@ void temp_control_task(void *pvParameters) {
 
         // Update predicted y(t) and dy/dt based on the calculated control input
         // Zero out last index in ring buffer since that's the new "frontier" of our current ring buffer
-        Y_pred[(dY_pred_index - 1) % MCP_N] = 0.0f;
-        dY_pred[(dY_pred_index - 1) % MCP_N] = 0.0f;
-        // TODO this part is broken
-        for(int i = 0; i < MCP_N; i++) {
-            // Derivative of C * logistic = C * dLogistic = C * logistic * (1 - logistic)
-            // They also add up for each summation
-            Y_pred[(dY_pred_index + i + 1) % MCP_N] += ((u * ENERGY_PER_HALF_PHASE) * (y_logistic(i))) / MODEL_J_PER_C;
-            dY_pred[(dY_pred_index + i + 1) % MCP_N] = Y_pred[(dY_pred_index + i + 1) % MCP_N] - Y_pred[(dY_pred_index + i) % MCP_N];
-        }
+        // Y_pred[(dY_pred_index - 1) % MCP_N] = 0.0f;
+        // dY_pred[(dY_pred_index - 1) % MCP_N] = 0.0f;
+        // // TODO this part is broken
+        // for(int i = 0; i < MCP_N; i++) {
+        //     // Derivative of C * logistic = C * dLogistic = C * logistic * (1 - logistic)
+        //     // They also add up for each summation
+        //     Y_pred[(dY_pred_index + i + 1) % MCP_N] += ((u * ENERGY_PER_HALF_PHASE) * (y_logistic(i))) / MODEL_J_PER_C;
+        //     dY_pred[(dY_pred_index + i + 1) % MCP_N] = Y_pred[(dY_pred_index + i + 1) % MCP_N] - Y_pred[(dY_pred_index + i) % MCP_N];
+        // }
 
         // // u += ((brew_state && pump_state) * 60); // Take into account brew/pump state to compensate for cold water being pumped into boiler
         // u = (u < 0) ? 0 : (u > 60) ? 60 : u; // Bounds checking
@@ -362,10 +319,26 @@ void temp_control_task(void *pvParameters) {
         // ESP_LOGI("Temp MPC", "Next 10 MCP_X: %f %f %f %f %f %f %f %f %f %f", MCP_X[0], MCP_X[1], MCP_X[2], MCP_X[3], MCP_X[4], MCP_X[5], MCP_X[6], MCP_X[7], MCP_X[8], MCP_X[9]);
         // ESP_LOGI("Temp MPC", "Next 10 dY (predicted): %f %f %f %f %f %f %f %f %f %f", dY_pred[(dY_pred_index + 0) % MCP_N], dY_pred[(dY_pred_index + 1) % MCP_N], dY_pred[(dY_pred_index + 2) % MCP_N], dY_pred[(dY_pred_index + 3) % MCP_N], dY_pred[(dY_pred_index + 4) % MCP_N], dY_pred[(dY_pred_index + 5) % MCP_N], dY_pred[(dY_pred_index + 6) % MCP_N], dY_pred[(dY_pred_index + 7) % MCP_N], dY_pred[(dY_pred_index + 8) % MCP_N], dY_pred[(dY_pred_index + 9) % MCP_N]);
     
-        // ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 273*u);
-        // ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
+        ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 273*u);
+        ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
+
+        // ------------------------------------------------------------------
+        // Kalman Filter - prediction step
+        // Prediction step
+        // X_p = A * X;
+        extern uint8_t pump_state;
+        X_p = A * ((Matrix(2, 1, (float[100]){X[0][0], (-625.304f * pump_state) + ((1000.0f / SSR_TIME_MS) * ENERGY_PER_HALF_PHASE * u)})));
+
+        X_p.print();
+        // Control input
+        // X_p[0][0] += (PID_TIME_MS / SSR_TIME_MS) * (ENERGY_PER_HALF_PHASE * u);
+        // X_p[1][0] += (-625.304f * pump_state) + ((1000.0f / SSR_TIME_MS) * ENERGY_PER_HALF_PHASE * u); // Energy loss from pump putting water through TODO div 2 to account for timestep?
+
+        // Matrix P_p(2, 2);
+        P_p = ((A * P) * A.transpose()) + Q;
+        // ------------------------------------------------------------------
         
-        dY_pred_index += 1;
+        // dY_pred_index += 1;
         temp_prev = curr_temp;
 
         vTaskDelay(PID_TIME_MS / portTICK_PERIOD_MS);
