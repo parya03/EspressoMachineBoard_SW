@@ -25,9 +25,10 @@
 #include "Interface.h"
 #include "Matrix.h"
 
-#define PID_TIME_MS 500.0f // 5000.0f // 500.0f // Make sure this is float
+#define PID_TIME_MS 1000.0f // 5000.0f // 500.0f // Make sure this is float
 #define SSR_TIME_MS 500.0f // Cycle time of SSR
 #define MCP_N 50 // How many samples ahead the MCP loop should use - keep >20 (to compensate for boiler delay)
+#define SAMPLES_PER_SEC (1 / PID_TIME_MS)
 
 // MPC tunables
 #define ENERGY_PER_HALF_PHASE 6.482f // 777.8W RMS = 777.8 J/S -> 777.8J / 6.481666667 J per half phase

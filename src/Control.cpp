@@ -139,6 +139,26 @@ static float y_hyperbola(float n, float Q, float d_Q) {
     }
 }
 
+// n is in seconds, Q and dQ_cmd are arrays in Joules
+// Return value of expected temperature input at n seconds from now based on previous state and control history
+static float y_exp_use_hist(float n, float Q[MCP_N], int Q_index, float dQ_cmd[MCP_N], int dQ_index) {
+    float state_Q = 0.0f;
+    
+    for(int i = 0; i < MCP_N; i++) {
+        float hist_Q = Q[(Q_index - i) % MCP_N];
+        float hist_dQ_cmd = dQ_cmd[(dQ_index - i) % MCP_N];
+
+        float hist_T = hist_Q / MODEL_J_PER_C;
+        float hist_dT = hist_dQ_cmd / MODEL_J_PER_C;
+
+        float state_diff = hist_T + (hist_dT - (exp(-0.125 * (i + (n * SAMPLES_PER_SEC) - 2)) * hist_dT));
+
+        state_Q += (state_diff >= 0) ? state_diff : 0;
+    }
+
+    return state_Q;
+}
+
 void temp_control_task(void *pvParameters) {
     float therm_raw_avg = 0.0f;
     float temp_prev = 0.0f;
@@ -168,6 +188,13 @@ void temp_control_task(void *pvParameters) {
     A.transpose().print();
     // Matrix A_transpose[2][2] = {{1, 1}, {1, PID_TIME_MS/1000.0f}};
     Matrix Q(2, 2, (float[100]){5.0f, 0.0f, 0.0f, 0.5f});
+    
+    // Previous predictions and control inputs
+    // Ring buffers
+    float commanded_dQ_prev[MCP_N] = { 0 };
+    int commanded_dQ_prev_index = 0;
+    float Q_prev[MCP_N] = { 0 };
+    int Q_prev_index = 0;
 
     // Matrix test1(2, 3, (float[100]){1, 2, 3, 4, 5, 6});
     // Matrix test2(3, 2, (float[100]){7, 8, 9, 10, 11, 12});
@@ -234,7 +261,8 @@ void temp_control_task(void *pvParameters) {
 
         Matrix Z(1, 1, curr_temp);
         // Matrix hx(1, 1, ((X[0][0] / MODEL_J_PER_C) + ((X_p[1][0] * y_logistic(PID_TIME_MS/1000.0f))/MODEL_J_PER_C))); // z - h(x_p)
-        Matrix hx(1, 1, y_hyperbola(PID_TIME_MS / 1000.0f, X_p[0][0], X_p[1][0])); // z - h(x_p)
+        // Matrix hx(1, 1, y_hyperbola(PID_TIME_MS / 1000.0f, X_p[0][0], X_p[1][0])); // z - h(x_p)
+        Matrix hx(1, 1, y_exp_use_hist(PID_TIME_MS / 1000.0f, Q_prev, Q_prev_index, commanded_dQ_prev, commanded_dQ_prev_index)); // z - h(x_p)
         X = X_p + (K * (Z - hx));
         P = P_p - ((K * H) * P_p);
 
@@ -250,7 +278,11 @@ void temp_control_task(void *pvParameters) {
         (K * (Z - hx)).print();
         ((K * H) * P_p).print();
         ((A * P)).print();
-        ESP_LOGI("Control - Kalman", "y_hyperbola = %f, States generated, X = [%f, %f]T; P = [%f, %f; %f, %f]", y_hyperbola(PID_TIME_MS/1000.0f, X[0][0], X[1][0]), X[0][0], X[1][0], P[0][0], P[0][1], P[1][0], P[1][1]);
+        
+        // Store prediction
+        Q_prev[(Q_prev_index++) % MCP_N] = X[0][0]; 
+
+        ESP_LOGI("Control - Kalman", "hx[0] = %f, States generated, X = [%f, %f]T; P = [%f, %f; %f, %f]", hx[0][0], X[0][0], X[1][0], P[0][0], P[0][1], P[1][0], P[1][1]);
         // ------------------------------------------------------------------
 
         // MPC - Model Predictive Control
@@ -290,6 +322,9 @@ void temp_control_task(void *pvParameters) {
 
         // Only output first predicted control output
         u = U[0];
+
+        // Store control input
+        commanded_dQ_prev[(commanded_dQ_prev_index++) % MCP_N] = (1.0f / u) * MODEL_J_PER_C;
         
         u = (u < 0) ? 0 : (u > 60) ? 60 : u; // Bounds checking
 
