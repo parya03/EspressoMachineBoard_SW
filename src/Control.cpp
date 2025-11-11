@@ -302,6 +302,8 @@ void temp_control_task(void *pvParameters) {
         // Store prediction
         Q_prev[(Q_prev_index++) % MCP_N] = X[0][0]; 
 
+        Matrix X_deviation(2, 1, (float[100]){X[0][0] - X_p[0][0], X[1][0] - X_p[1][0]});
+        X_deviation.print();
         ESP_LOGI("Control - Kalman", "hx[0] = %f, States generated, X = [%f, %f]T; P = [%f, %f; %f, %f]", hx[0][0], X[0][0], X[1][0], P[0][0], P[0][1], P[1][0], P[1][1]);
         // ------------------------------------------------------------------
 
@@ -335,7 +337,7 @@ void temp_control_task(void *pvParameters) {
                 U[n] = 60;
             }
             // Predict next state
-            MCP_X[n+1] = MCP_X[n] + (ENERGY_PER_HALF_PHASE * U[n]);
+            MCP_X[n+1] = MCP_X[n] + (ENERGY_PER_HALF_PHASE * U[n]) - X_deviation[1][0]; // Account for current heat loss
             // Update MSE
             MSE += (MCP_X[n+1] - setpoint_energy) / (float)MCP_N;
         }
