@@ -153,13 +153,21 @@ static float y_exp_use_hist(float n, float Q[MCP_N], int Q_index, float dQ_cmd[M
         float hist_dT = hist_dQ_cmd / MODEL_J_PER_C;
         
         float state_diff = hist_T + (hist_dT - (exp(-0.125 * (i + (n * SAMPLES_PER_SEC) - 2)) * hist_dT));
-        printf("Hist T = %f, Hist dT = %f, hist_Q = %f, hist_dQ_cmd=%f, state_diff=%f\n", hist_T, hist_dT, hist_Q, hist_dQ_cmd, state_diff);
+        // printf("Hist T = %f, Hist dT = %f, hist_Q = %f, hist_dQ_cmd=%f, state_diff=%f\n", hist_T, hist_dT, hist_Q, hist_dQ_cmd, state_diff);
 
         state_Q += (state_diff >= 0) ? state_diff : 0;
     }
 
     return (state_Q / (float)buffer_element_num); // Average of all predicted values
 }
+
+static Matrix gen_A_matrix_jacobian(Matrix x, int u, bool pump_on) {
+    return Matrix(2, 2, (float[100]){1, x[1][0] * (PID_TIME_MS/1000.0f), 0, 0});
+}
+
+static Matrix x_state_transition(Matrix x, int u, bool pump_on) {
+    return Matrix(2, 1, (float[100]){x[0][0] + ((PID_TIME_MS / 1000.0f) * x[1][0]), ((-625.304f * (int)pump_on) + ((PID_TIME_MS / SSR_TIME_MS) * (ENERGY_PER_HALF_PHASE * u)))});
+}                                                                                                                                                
 
 void temp_control_task(void *pvParameters) {
     float therm_raw_avg = 0.0f;
@@ -185,7 +193,8 @@ void temp_control_task(void *pvParameters) {
     Matrix P(2, 2);
 
     // Kalman constants
-    Matrix A(2, 2, (float[100]){1, PID_TIME_MS/1000.0f, 0.0f, 1.0f});
+    // Matrix A(2, 2, (float[100]){1, PID_TIME_MS/1000.0f, 0.0f, 1.0f});
+    Matrix A = gen_A_matrix_jacobian(X, 0, false); // Initial A matrix
     A.print();
     A.transpose().print();
     // Matrix A_transpose[2][2] = {{1, 1}, {1, PID_TIME_MS/1000.0f}};
@@ -227,7 +236,7 @@ void temp_control_task(void *pvParameters) {
     int u = 0;
 
     // Initial Prediction step
-    Matrix X_p = A * X;
+    Matrix X_p = x_state_transition(X, 0, false);
     Matrix P_p = ((A * P) * A.transpose()) + Q;
     
     Q_prev[(Q_prev_index++) % MCP_N] = X[0][0]; 
@@ -260,7 +269,8 @@ void temp_control_task(void *pvParameters) {
         // Estimate step
         Matrix S(1, 1);
         // Matrix H(1, 2, (float[100]){y_logistic(PID_TIME_MS/1000.0f) / MODEL_J_PER_C, ((PID_TIME_MS/1000.0f) * y_logistic(PID_TIME_MS/1000.0f)) / MODEL_J_PER_C});
-        Matrix H(1, 2, (float[100]){1.0f / MODEL_J_PER_C, (1.0f / MODEL_J_PER_C) - (0.004107)}); // dT/dQ = 1/J_per_C, dT/d(dQ) = (1 / J_PER_C) - exp(0.25) / J_PER_C
+        // Matrix H(1, 2, (float[100]){1.0f / MODEL_J_PER_C, (1.0f / MODEL_J_PER_C) - (0.004107)}); // dT/dQ = 1/J_per_C, dT/d(dQ) = (1 / J_PER_C) - exp(0.25) / J_PER_C
+        Matrix H(1, 2, (float[100]){1.0f / MODEL_J_PER_C, 0.0008539846219f}); // dT/dQ = 1/J_per_C, dT/d(dQ) = (1 / J_PER_C) - exp(0.25) / J_PER_C
         S = ((H * P_p) * H.transpose()) + Matrix(1, 1, 0.02); // 0.279f
         Matrix K(2, 1);
         Matrix S_inv(1, 1);
@@ -271,7 +281,8 @@ void temp_control_task(void *pvParameters) {
         // Matrix hx(1, 1, ((X[0][0] / MODEL_J_PER_C) + ((X_p[1][0] * y_logistic(PID_TIME_MS/1000.0f))/MODEL_J_PER_C))); // z - h(x_p)
         // Matrix hx(1, 1, y_hyperbola(PID_TIME_MS / 1000.0f, X_p[0][0], X_p[1][0])); // z - h(x_p)
         int buf_elements = (iterations >= 50) ? 50 : iterations;
-        Matrix hx(1, 1, y_exp_use_hist(PID_TIME_MS / 1000.0f, Q_prev, Q_prev_index, commanded_dQ_prev, commanded_dQ_prev_index, buf_elements)); // z - h(x_p)
+        // Matrix hx(1, 1, y_exp_use_hist(PID_TIME_MS / 1000.0f, Q_prev, Q_prev_index, commanded_dQ_prev, commanded_dQ_prev_index, buf_elements)); // z - h(x_p)
+        Matrix hx(1, 1, y_exp_use_hist(0, Q_prev, Q_prev_index, commanded_dQ_prev, commanded_dQ_prev_index, buf_elements)); // z - h(x_p)
         X = X_p + (K * (Z - hx));
         P = P_p - ((K * H) * P_p);
 
@@ -338,7 +349,7 @@ void temp_control_task(void *pvParameters) {
         curr_energy += (u * ENERGY_PER_HALF_PHASE); // Each half phase of control adds Joules to the system.
 
         // Store control input
-        commanded_dQ_prev[(commanded_dQ_prev_index++) % MCP_N] = (u * ENERGY_PER_HALF_PHASE);
+        commanded_dQ_prev[(commanded_dQ_prev_index++) % MCP_N] = X[1][0] + (u * ENERGY_PER_HALF_PHASE);
         
         // Update predicted y(t) and dy/dt based on the calculated control input
         // Zero out last index in ring buffer since that's the new "frontier" of our current ring buffer
@@ -371,11 +382,13 @@ void temp_control_task(void *pvParameters) {
         // Prediction step
         // X_p = A * X;
         extern uint8_t pump_state;
+        A = gen_A_matrix_jacobian(X, u, pump_state);
         // X_p = A * ((Matrix(2, 1, (float[100]){X[0][0], (-625.304f * pump_state) + ((1000.0f / SSR_TIME_MS) * ENERGY_PER_HALF_PHASE * u)})));
-        X_p = A * ((Matrix(2, 1, (float[100]){X[0][0], X[1][0]})));
+        // X_p = A * ((Matrix(2, 1, (float[100]){X[0][0], X[1][0]})));
+        X_p = x_state_transition(X, u, pump_state);
 
         // Control input
-        X_p[0][0] += (-625.304f * pump_state) + ((PID_TIME_MS / SSR_TIME_MS) * (ENERGY_PER_HALF_PHASE * u));
+        // X_p[0][0] += (-625.304f * pump_state) + ((PID_TIME_MS / SSR_TIME_MS) * (ENERGY_PER_HALF_PHASE * u));
         // X_p[1][0] += (-625.304f * pump_state) + ((1000.0f / SSR_TIME_MS) * ENERGY_PER_HALF_PHASE * u); // Energy loss from pump putting water through TODO div 2 to account for timestep?
 
         X_p.print();
