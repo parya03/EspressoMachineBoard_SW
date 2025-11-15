@@ -31,7 +31,8 @@
 #define SAMPLES_PER_SEC (1 / PID_TIME_MS)
 
 // MPC tunables
-#define ENERGY_PER_HALF_PHASE 6.482f // 777.8W RMS = 777.8 J/S -> 777.8J / 6.481666667 J per half phase
+// #define ENERGY_PER_HALF_PHASE 6.482f // 777.8W RMS = 777.8 J/S -> 777.8J / 120 = 6.481666667 J per half phase
+#define ENERGY_PER_HALF_PHASE 10.017f // 1202W RMS = 1202 J/S -> 1202J / 120 = 10.017 J per half phase
 #define MODEL_J_PER_C 312.652f // Found empirically by dividing energy put in my temperature rise
 
 extern float setpoint; // Degrees C

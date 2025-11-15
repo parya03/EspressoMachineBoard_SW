@@ -66,6 +66,14 @@ class Matrix {
         // for(int i = 0; i < rows; i++) {
         //     data[i] = new float[cols];
         // }
+        
+        if(rows > SIZE_DIAGONAL || cols > SIZE_DIAGONAL) {
+            assert(0 && "Matrix declared as too big");
+        }
+
+        if(rows == 0 || cols == 0) {
+            assert(0 && "Matrix dimension declared as 0");
+        }
 
         this->_rows = rows;
         this->_cols = cols;
@@ -85,6 +93,14 @@ class Matrix {
         //     data[i] = new float[cols];
         // }
 
+        if(rows > SIZE_DIAGONAL || cols > SIZE_DIAGONAL) {
+            assert(0 && "Matrix declared as too big");
+        }
+
+        if(rows == 0 || cols == 0) {
+            assert(0 && "Matrix dimension declared as 0");
+        }
+
         this->_rows = rows;
         this->_cols = cols;
 
@@ -103,6 +119,14 @@ class Matrix {
         //     data[i] = new float[cols];
         // }
 
+        if(rows > SIZE_DIAGONAL || cols > SIZE_DIAGONAL) {
+            assert(0 && "Matrix declared as too big");
+        }
+
+        if(rows == 0 || cols == 0) {
+            assert(0 && "Matrix dimension declared as 0");
+        }
+
         this->_rows = rows;
         this->_cols = cols;
 
@@ -115,13 +139,21 @@ class Matrix {
         }
     }
 
+    Matrix(const Matrix& other) {
+        this->_rows = other.rows;
+        this->_cols = other.cols;
+
+        this->_copy_buf((float *)other.data);
+    }
+
     ~Matrix() {
         // for(int i = 0; i < rows; i++) {
         //     delete[] data[i];
         // }
 
         // delete[] data;
-
+        
+        // printf("Matrix deleted of size %d x %d at addr %X\n", rows, cols, (unsigned int)this);
         this->_rows = 0;
         this->_cols = 0;
     }
@@ -158,6 +190,9 @@ class Matrix {
                 data[(i * cols) + o] = other.data[(i * cols) + o];
             }
         }
+
+        // this->_rows = other.rows;
+        // this->_cols = other.cols;
 
         return *this;
     }
@@ -240,6 +275,7 @@ class Matrix {
             return Matrix(rows, cols, temp);
         }
         else {
+            printf("This: %d x %d, other %d x %d\n", this->_rows, this->_cols, other._rows, other._cols);
             assert(0 && "Matrix addition with different matrix sizes!");
         }
     }
@@ -267,6 +303,34 @@ class Matrix {
         float temp[100];
 
         // matmul((float *)data, rows, cols, (float *)other.data, other.rows, other.cols, (float *)temp);
+        
+        // 1x1 matrix is a scalar
+        if(this->_cols == 1 && this->_rows == 1) {
+            for(int i = 0; i < other.rows; i++) {
+                for(int o = 0; o < other.cols; o++) {
+                    // buffer_deref(temp, i, o) -= buffer_deref(other.data, i, o);
+                    temp[(i * other.cols) + o] = other.data[(i * other.cols) + o] * this->data[0];
+                }
+            }
+
+            auto mat = Matrix(other.rows, other.cols, 0.0f);
+            mat._copy_buf(temp);
+
+            return mat;
+        }
+        else if(other._cols == 1 && other._rows == 1) {
+            for(int i = 0; i < rows; i++) {
+                for(int o = 0; o < cols; o++) {
+                    // buffer_deref(temp, i, o) -= buffer_deref(other.data, i, o);
+                    temp[(i * cols) + o] = data[(i * cols) + o] * other.data[0];
+                }
+            }
+
+            auto mat = Matrix(rows, cols, 0.0f);
+            mat._copy_buf(temp);
+
+            return mat;
+        }
 
         if (this->_cols != other._rows) {
             assert(0 && "Error: Incompatible dimensions for multiplication");
@@ -309,7 +373,28 @@ class Matrix {
         return mat;
     }
 
+    Matrix inverse() {
+        if(this->_rows == 1 && this->_cols == 1) {
+            // This is a scalar
+            return Matrix(1, 1, (1.0f / this->data[0]));
+        }
+
+        if(this->_rows == 2 && this->_cols == 2) {
+            // 2x2 Matrix is straightforward
+            float determinant = ((*this)[0][0] * (*this)[1][1]) - ((*this)[0][1] * (*this)[1][0]);
+            float a = (*this)[1][1];
+            float b = -((*this)[0][1]);
+            float c = -((*this)[1][0]);
+            float d = (*this)[0][0];
+            return Matrix(1, 1, (float[100]){determinant * a, determinant * b, determinant * c, determinant * d});
+        }
+
+        assert(0 && "Inverting past 2x2 is scary and is therefore not implemented");
+        return Matrix(1, 1, -1);
+    }
+
     void print() {
+        // printf("Printing %d rows and %d cols\n", rows, cols);
         printf("----------\n");
         for(int i = 0; i < rows; i++) {
             printf("[ ");

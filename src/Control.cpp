@@ -140,10 +140,14 @@ static float y_hyperbola(float n, float Q, float d_Q) {
 }
 
 // n is in seconds, Q and dQ_cmd are arrays in Joules
-// Return value of expected temperature input at n seconds from now based on previous state and control history
+// Return pair containing:
+// - Value of expected temperature input at n seconds from now based on previous state and control history
+// - Derivative of value at that time
+// This allows us to calculate h(x) and H matrix in one go
 // buffer_element_num is how many elements are in the buffers given, since they won't necessarily be full e.g. on startup
-static float y_exp_use_hist(float n, float Q[MCP_N], int Q_index, float dQ_cmd[MCP_N], int dQ_index, int buffer_element_num) {
+static std::pair<float, float> y_exp_use_hist(float n, float Q[MCP_N], int Q_index, float dQ_cmd[MCP_N], int dQ_index, int buffer_element_num) {
     float state_Q = 0.0f;
+    float state_Q_prev = 0.0f; // Previous n to take derivative
     
     for(int i = 1; i <= buffer_element_num; i++) {
         float hist_Q = Q[(Q_index - i) % MCP_N];
@@ -152,13 +156,19 @@ static float y_exp_use_hist(float n, float Q[MCP_N], int Q_index, float dQ_cmd[M
         float hist_T = hist_Q / MODEL_J_PER_C;
         float hist_dT = hist_dQ_cmd / MODEL_J_PER_C;
         
-        float state_diff = hist_T + (hist_dT - (exp(-0.125 * (i + (n * SAMPLES_PER_SEC) - 2)) * hist_dT));
+        float state_diff = hist_T + (hist_dT - (exp((-0.125 * ((i / SAMPLES_PER_SEC) + (n - 2.0f))) * SAMPLES_PER_SEC) * hist_dT));
+        float state_diff_prev = hist_T + (hist_dT - (exp((-0.125 * ((i / SAMPLES_PER_SEC) + (n - 1.0f))) * SAMPLES_PER_SEC) * hist_dT));
+
         // printf("Hist T = %f, Hist dT = %f, hist_Q = %f, hist_dQ_cmd=%f, state_diff=%f\n", hist_T, hist_dT, hist_Q, hist_dQ_cmd, state_diff);
 
         state_Q += (state_diff >= 0) ? state_diff : 0;
+        state_Q_prev += (state_diff_prev >= 0) ? state_diff_prev : 0;
     }
+    
+    state_Q /= (float)buffer_element_num;
+    state_Q_prev /= (float)buffer_element_num;
 
-    return (state_Q / (float)buffer_element_num); // Average of all predicted values
+    return std::pair<float, float>(state_Q, state_Q - state_Q_prev); // Average of all predicted values
 }
 
 static Matrix gen_A_matrix_jacobian(Matrix x, int u, bool pump_on) {
@@ -266,11 +276,18 @@ void temp_control_task(void *pvParameters) {
         // ------------------------------------------------------------------
         // Kalman filter
 
+        // Includes both predicted Y and Y' so that both are only computed once
+        int buf_elements = (iterations >= 50) ? 50 : iterations;
+        auto y_pred = y_exp_use_hist(0, Q_prev, Q_prev_index, commanded_dQ_prev, commanded_dQ_prev_index, buf_elements);
+
         // Estimate step
         Matrix S(1, 1);
         // Matrix H(1, 2, (float[100]){y_logistic(PID_TIME_MS/1000.0f) / MODEL_J_PER_C, ((PID_TIME_MS/1000.0f) * y_logistic(PID_TIME_MS/1000.0f)) / MODEL_J_PER_C});
         // Matrix H(1, 2, (float[100]){1.0f / MODEL_J_PER_C, (1.0f / MODEL_J_PER_C) - (0.004107)}); // dT/dQ = 1/J_per_C, dT/d(dQ) = (1 / J_PER_C) - exp(0.25) / J_PER_C
+        // This might be inoptimal since it's basically saying that a change in Q linearly affects measurement,
+        // but a change in dQ almost doesn't affect it at all. This is mostly true since we only see changes ~2 secs from now.
         Matrix H(1, 2, (float[100]){1.0f / MODEL_J_PER_C, 0.0008539846219f}); // dT/dQ = 1/J_per_C, dT/d(dQ) = (1 / J_PER_C) - exp(0.25) / J_PER_C
+        // Matrix H(1, 2, (float[100]){y_pred.second, 0}); // dT/dQ = 1/J_per_C, dT/d(dQ) = (1 / J_PER_C) - exp(0.25) / J_PER_C
         S = ((H * P_p) * H.transpose()) + Matrix(1, 1, 0.02); // 0.279f
         Matrix K(2, 1);
         Matrix S_inv(1, 1);
@@ -280,9 +297,8 @@ void temp_control_task(void *pvParameters) {
         Matrix Z(1, 1, curr_temp);
         // Matrix hx(1, 1, ((X[0][0] / MODEL_J_PER_C) + ((X_p[1][0] * y_logistic(PID_TIME_MS/1000.0f))/MODEL_J_PER_C))); // z - h(x_p)
         // Matrix hx(1, 1, y_hyperbola(PID_TIME_MS / 1000.0f, X_p[0][0], X_p[1][0])); // z - h(x_p)
-        int buf_elements = (iterations >= 50) ? 50 : iterations;
         // Matrix hx(1, 1, y_exp_use_hist(PID_TIME_MS / 1000.0f, Q_prev, Q_prev_index, commanded_dQ_prev, commanded_dQ_prev_index, buf_elements)); // z - h(x_p)
-        Matrix hx(1, 1, y_exp_use_hist(0, Q_prev, Q_prev_index, commanded_dQ_prev, commanded_dQ_prev_index, buf_elements)); // z - h(x_p)
+        Matrix hx(1, 1, (float[100]){y_pred.first}); // z - h(x_p)
         X = X_p + (K * (Z - hx));
         P = P_p - ((K * H) * P_p);
 
